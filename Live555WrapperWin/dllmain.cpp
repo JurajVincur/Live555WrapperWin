@@ -24,6 +24,7 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 #include "BasicUsageEnvironment.hh"
 #include <thread>
 #include <mutex>
+#include "RTSPService.hh"
 
 // Forward function definitions:
 static float bytesToFloat(const u_int8_t* bytes);
@@ -615,19 +616,16 @@ static float bytesToFloat(const u_int8_t* bytes) {
 
 static RTSPClientService service;
 
-extern "C" {
+void CStart(const char* url) {
+	service.Start(url);
+}
 
-	__declspec(dllexport) void CStart(const char* url) {
-		service.Start(url);
-	}
+void CStop() {
+	service.Stop();
+}
 
-	__declspec(dllexport) void CStop() {
-		service.Stop();
-	}
-
-	__declspec(dllexport) void CGetGazePoint(float* out) {
-		gazePointMtx.lock();
-		memcpy(out, gazePoint, sizeof(gazePoint));
-		gazePointMtx.unlock();
-	}
+void CGetGazePoint(float* out) {
+	gazePointMtx.lock();
+	memcpy(out, gazePoint, sizeof(gazePoint));
+	gazePointMtx.unlock();
 }
