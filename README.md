@@ -18,8 +18,11 @@
 ```csharp
 public static class Live555Wrapper
 {
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void LogCallback([MarshalAs(UnmanagedType.LPStr)] string message);
+
     [DllImport("Live555WrapperWin")]
-    public static extern void CStart([MarshalAs(UnmanagedType.LPStr)] string url);
+    public static extern void CStart([MarshalAs(UnmanagedType.LPStr)] string url, LogCallback callback); //callback can be set to null
 
     [DllImport("Live555WrapperWin")]
     public static extern void CStop();

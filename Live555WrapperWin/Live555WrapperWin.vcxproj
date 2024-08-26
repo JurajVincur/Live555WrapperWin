@@ -152,8 +152,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="LoggingUsageEnvironment.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="LoggingUsageEnvironment.hh" />
     <ClInclude Include="RTSPService.hh" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

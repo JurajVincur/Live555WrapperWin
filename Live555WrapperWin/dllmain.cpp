@@ -21,10 +21,23 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 // "openRTSP": http://www.live555.com/openRTSP/
 
 #include "liveMedia.hh"
-#include "BasicUsageEnvironment.hh"
+#include "LoggingUsageEnvironment.hh"
 #include <thread>
 #include <mutex>
 #include "RTSPService.hh"
+
+enum StreamId {
+	GAZE = 0
+};
+
+enum StreamStatus {
+	UNINITIALIZED = 0,
+	CLIENT_CREATED = 1,
+	DESCRIBE_SUCCESS = 2,
+	SETUP_SUCCESS = 3,
+	PLAY_SUCCESS = 4,
+	SHUTDOWN = 5
+};
 
 // Forward function definitions:
 static float bytesToFloat(const u_int8_t* bytes);
@@ -43,7 +56,7 @@ static void streamTimerHandler(void* clientData);
 // called at the end of a stream's expected duration (if the stream has not already signaled its end using a RTCP "BYE")
 
 // The main streaming routine (for each "rtsp://" URL):
-static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL);
+static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, StreamId id);
 
 // Used to iterate through each stream's 'subsessions', setting up each one:
 static void setupNextSubsession(RTSPClient* rtspClient);
@@ -90,19 +103,20 @@ public:
 
 class ourRTSPClient : public RTSPClient {
 public:
-	static ourRTSPClient* createNew(UsageEnvironment& env, char const* rtspURL,
+	static ourRTSPClient* createNew(UsageEnvironment& env, char const* rtspURL, unsigned id,
 		int verbosityLevel = 0,
 		char const* applicationName = NULL,
 		portNumBits tunnelOverHTTPPortNum = 0);
 
 protected:
-	ourRTSPClient(UsageEnvironment& env, char const* rtspURL,
+	ourRTSPClient(UsageEnvironment& env, char const* rtspURL, unsigned id,
 		int verbosityLevel, char const* applicationName, portNumBits tunnelOverHTTPPortNum);
 	// called only by createNew();
 	virtual ~ourRTSPClient();
 
 public:
 	StreamClientState scs;
+	unsigned id;
 };
 
 // Define a data sink (a subclass of "MediaSink") to receive the data for each subsession (i.e., each audio or video 'substream').
@@ -138,20 +152,20 @@ private:
 	char* fStreamId;
 };
 
+#define RTSP_MAX_CLIENT_COUNT 1 //potentially gaze, imu, eyes, world - currently gaze only
 #define RTSP_CLIENT_VERBOSITY_LEVEL 1 // by default, print verbose output from each "RTSPClient"
+static std::atomic<unsigned> rtspClientStatus[RTSP_MAX_CLIENT_COUNT];
 
-static unsigned rtspClientCount = 0; // Counts how many streams (i.e., "RTSPClient"s) are currently in use.
-
-static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL) {
+static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, StreamId id) {
 	// Begin by creating a "RTSPClient" object.  Note that there is a separate "RTSPClient" object for each stream that we wish
 	// to receive (even if more than stream uses the same "rtsp://" URL).
-	RTSPClient* rtspClient = ourRTSPClient::createNew(env, rtspURL, RTSP_CLIENT_VERBOSITY_LEVEL, progName);
+	RTSPClient* rtspClient = ourRTSPClient::createNew(env, rtspURL, id, RTSP_CLIENT_VERBOSITY_LEVEL, progName);
 	if (rtspClient == NULL) {
 		env << "Failed to create a RTSP client for URL \"" << rtspURL << "\": " << env.getResultMsg() << "\n";
 		return NULL;
 	}
 
-	++rtspClientCount;
+	rtspClientStatus[((ourRTSPClient*)rtspClient)->id] = StreamStatus::CLIENT_CREATED;
 
 	// Next, send a RTSP "DESCRIBE" command, to get a SDP description for the stream.
 	// Note that this command - like all RTSP commands - is sent asynchronously; we do not block, waiting for a response.
@@ -166,7 +180,8 @@ static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char con
 static void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* resultString) {
 	do {
 		UsageEnvironment& env = rtspClient->envir(); // alias
-		StreamClientState& scs = ((ourRTSPClient*)rtspClient)->scs; // alias
+		ourRTSPClient* oRtspClient = (ourRTSPClient*)rtspClient;
+		StreamClientState& scs = oRtspClient->scs; // alias
 
 		if (resultCode != 0) {
 			env << *rtspClient << "Failed to get a SDP description: " << resultString << "\n";
@@ -189,6 +204,8 @@ static void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* 
 			break;
 		}
 
+		rtspClientStatus[oRtspClient->id] = StreamStatus::DESCRIBE_SUCCESS;
+
 		// Then, create and set up our data source objects for the session.  We do this by iterating over the session's 'subsessions',
 		// calling "MediaSubsession::initiate()", and then sending a RTSP "SETUP" command, on each one.
 		// (Each 'subsession' will have its own data source.)
@@ -207,7 +224,8 @@ static void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* 
 
 static void setupNextSubsession(RTSPClient* rtspClient) {
 	UsageEnvironment& env = rtspClient->envir(); // alias
-	StreamClientState& scs = ((ourRTSPClient*)rtspClient)->scs; // alias
+	ourRTSPClient* oRtspClient = (ourRTSPClient*)rtspClient;
+	StreamClientState& scs = oRtspClient->scs; // alias
 
 	scs.subsession = scs.iter->next();
 	if (scs.subsession != NULL) {
@@ -230,6 +248,8 @@ static void setupNextSubsession(RTSPClient* rtspClient) {
 		}
 		return;
 	}
+
+	rtspClientStatus[oRtspClient->id] = StreamStatus::SETUP_SUCCESS;
 
 	// We've finished setting up all of the subsessions.  Now, send a RTSP "PLAY" command to start the streaming:
 	if (scs.session->absStartTime() != NULL) {
@@ -293,7 +313,8 @@ static void continueAfterPLAY(RTSPClient* rtspClient, int resultCode, char* resu
 
 	do {
 		UsageEnvironment& env = rtspClient->envir(); // alias
-		StreamClientState& scs = ((ourRTSPClient*)rtspClient)->scs; // alias
+		ourRTSPClient* oRtspClient = (ourRTSPClient*)rtspClient;
+		StreamClientState& scs = oRtspClient->scs; // alias
 
 		if (resultCode != 0) {
 			env << *rtspClient << "Failed to start playing session: " << resultString << "\n";
@@ -317,6 +338,7 @@ static void continueAfterPLAY(RTSPClient* rtspClient, int resultCode, char* resu
 		}
 		env << "...\n";
 
+		rtspClientStatus[oRtspClient->id] = StreamStatus::PLAY_SUCCESS;
 		success = True;
 	} while (0);
 	delete[] resultString;
@@ -377,7 +399,8 @@ static void streamTimerHandler(void* clientData) {
 
 static void shutdownStream(RTSPClient* rtspClient, int exitCode) {
 	UsageEnvironment& env = rtspClient->envir(); // alias
-	StreamClientState& scs = ((ourRTSPClient*)rtspClient)->scs; // alias
+	ourRTSPClient* oRtspClient = (ourRTSPClient*)rtspClient;
+	StreamClientState& scs = oRtspClient->scs; // alias
 
 	// First, check whether any subsessions have still to be closed:
 	if (scs.session != NULL) {
@@ -405,29 +428,25 @@ static void shutdownStream(RTSPClient* rtspClient, int exitCode) {
 		}
 	}
 
+	rtspClientStatus[oRtspClient->id] = StreamStatus::SHUTDOWN;
+
 	env << *rtspClient << "Closing the stream.\n";
 	Medium::close(rtspClient);
 	// Note that this will also cause this stream's "StreamClientState" structure to get reclaimed.
-
-	if (--rtspClientCount == 0) {
-		// The final stream has ended, so exit the application now.
-		// (Of course, if you're embedding this code into your own application, you might want to comment this out,
-		// and replace it with "eventLoopWatchVariable = 1;", so that we leave the LIVE555 event loop, and continue running "main()".)
-		// exit(exitCode);
-	}
 }
 
 
 // Implementation of "ourRTSPClient":
 
-ourRTSPClient* ourRTSPClient::createNew(UsageEnvironment& env, char const* rtspURL,
+ourRTSPClient* ourRTSPClient::createNew(UsageEnvironment& env, char const* rtspURL, unsigned id,
 	int verbosityLevel, char const* applicationName, portNumBits tunnelOverHTTPPortNum) {
-	return new ourRTSPClient(env, rtspURL, verbosityLevel, applicationName, tunnelOverHTTPPortNum);
+	return new ourRTSPClient(env, rtspURL, id, verbosityLevel, applicationName, tunnelOverHTTPPortNum);
 }
 
-ourRTSPClient::ourRTSPClient(UsageEnvironment& env, char const* rtspURL,
+ourRTSPClient::ourRTSPClient(UsageEnvironment& env, char const* rtspURL, unsigned id,
 	int verbosityLevel, char const* applicationName, portNumBits tunnelOverHTTPPortNum)
 	: RTSPClient(env, rtspURL, verbosityLevel, applicationName, tunnelOverHTTPPortNum, -1) {
+	this->id = id;
 }
 
 ourRTSPClient::~ourRTSPClient() {
@@ -532,11 +551,11 @@ class RTSPClientService
 {
 public:
 	~RTSPClientService();
-	void Start(const char* url);
+	void Start(const char* gazeUrl, LogCallback callback);
 	void Stop();
 
 private:
-	std::string url;
+	std::string gazeUrl;
 	TaskScheduler* scheduler = NULL;
 	UsageEnvironment* env = NULL;
 	volatile char watchVariable = 0;
@@ -550,15 +569,15 @@ RTSPClientService::~RTSPClientService()
 	Stop();
 }
 
-void RTSPClientService::Start(const char* url)
+void RTSPClientService::Start(const char* gazeUrl, LogCallback callback)
 {
 	if (workerThread.joinable()) {
 		Stop();
 	}
-	this->url = std::string(url);
+	this->gazeUrl = std::string(gazeUrl);
 	watchVariable = 0;
 	scheduler = BasicTaskScheduler::createNew();
-	env = BasicUsageEnvironment::createNew(*scheduler);
+	env = LoggingUsageEnvironment::createNew(*scheduler, callback);
 	workerThread = std::thread(&RTSPClientService::DoWork, this);
 }
 
@@ -581,9 +600,12 @@ void RTSPClientService::Stop()
 
 void RTSPClientService::DoWork()
 {
-	RTSPClient* client = openURL(*env, "Live555RTSPClient", url.c_str());
+	RTSPClient* client = openURL(*env, "Live555RTSPClient", gazeUrl.c_str(), StreamId::GAZE);
 	env->taskScheduler().doEventLoop(&watchVariable);
-	shutdownStream(client);
+	unsigned clientStatus = rtspClientStatus[StreamId::GAZE];
+	if (clientStatus != StreamStatus::UNINITIALIZED && clientStatus != StreamStatus::SHUTDOWN) {
+		shutdownStream(client);
+	}
 	client = NULL;
 }
 
@@ -616,8 +638,8 @@ static float bytesToFloat(const u_int8_t* bytes) {
 
 static RTSPClientService service;
 
-void CStart(const char* url) {
-	service.Start(url);
+void CStart(const char* url, LogCallback callback) {
+	service.Start(url, callback);
 }
 
 void CStop() {

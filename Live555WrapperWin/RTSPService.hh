@@ -6,6 +6,8 @@
 #define LIVE555WRAPPERWIN_API __declspec(dllimport)
 #endif
 
-extern "C" LIVE555WRAPPERWIN_API void CStart(const char* url);
+typedef void (*LogCallback)(const char*);
+
+extern "C" LIVE555WRAPPERWIN_API void CStart(const char* url, LogCallback callback);
 extern "C" LIVE555WRAPPERWIN_API void CStop();
 extern "C" LIVE555WRAPPERWIN_API void CGetGazePoint(float* out);

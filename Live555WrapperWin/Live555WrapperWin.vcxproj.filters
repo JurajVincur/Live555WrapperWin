@@ -18,9 +18,15 @@
     <ClCompile Include="dllmain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="LoggingUsageEnvironment.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="RTSPService.hh">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="LoggingUsageEnvironment.hh">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
