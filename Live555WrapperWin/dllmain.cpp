@@ -27,7 +27,8 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 #include "RTSPService.hh"
 
 enum StreamId {
-	GAZE = 0
+	GAZE = 0,
+	WORLD = 1
 };
 
 enum StreamStatus {
@@ -56,7 +57,7 @@ static void streamTimerHandler(void* clientData);
 // called at the end of a stream's expected duration (if the stream has not already signaled its end using a RTCP "BYE")
 
 // The main streaming routine (for each "rtsp://" URL):
-static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, StreamId id);
+static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, unsigned int id, RawDataCallback dataCallback);
 
 // Used to iterate through each stream's 'subsessions', setting up each one:
 static void setupNextSubsession(RTSPClient* rtspClient);
@@ -103,13 +104,14 @@ public:
 
 class ourRTSPClient : public RTSPClient {
 public:
-	static ourRTSPClient* createNew(UsageEnvironment& env, char const* rtspURL, unsigned id,
+	static ourRTSPClient* createNew(UsageEnvironment& env, char const* rtspURL, unsigned id, RawDataCallback dataCallback,
 		int verbosityLevel = 0,
 		char const* applicationName = NULL,
 		portNumBits tunnelOverHTTPPortNum = 0);
+	RawDataCallback dataCallback = NULL;
 
 protected:
-	ourRTSPClient(UsageEnvironment& env, char const* rtspURL, unsigned id,
+	ourRTSPClient(UsageEnvironment& env, char const* rtspURL, unsigned id, RawDataCallback dataCallback,
 		int verbosityLevel, char const* applicationName, portNumBits tunnelOverHTTPPortNum);
 	// called only by createNew();
 	virtual ~ourRTSPClient();
@@ -122,18 +124,18 @@ public:
 // Define a data sink (a subclass of "MediaSink") to receive the data for each subsession (i.e., each audio or video 'substream').
 // In practice, this might be a class (or a chain of classes) that decodes and then renders the incoming audio or video.
 // Or it might be a "FileSink", for outputting the received data into a file (as is done by the "openRTSP" application).
-// In this example code, however, we define a simple 'dummy' sink that receives incoming data, but does nothing with it.
 
-class DummySink : public MediaSink {
+class CallbackSink : public MediaSink {
 public:
-	static DummySink* createNew(UsageEnvironment& env,
+	static CallbackSink* createNew(UsageEnvironment& env,
 		MediaSubsession& subsession, // identifies the kind of data that's being received
+		RawDataCallback dataCallback,
 		char const* streamId = NULL); // identifies the stream itself (optional)
 
 private:
-	DummySink(UsageEnvironment& env, MediaSubsession& subsession, char const* streamId);
+	CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, char const* streamId);
 	// called only by "createNew()"
-	virtual ~DummySink();
+	virtual ~CallbackSink();
 
 	static void afterGettingFrame(void* clientData, unsigned frameSize,
 		unsigned numTruncatedBytes,
@@ -145,6 +147,7 @@ private:
 private:
 	// redefined virtual functions:
 	virtual Boolean continuePlaying();
+	RawDataCallback dataCallback;
 
 private:
 	u_int8_t* fReceiveBuffer;
@@ -152,14 +155,14 @@ private:
 	char* fStreamId;
 };
 
-#define RTSP_MAX_CLIENT_COUNT 1 //potentially gaze, imu, eyes, world - currently gaze only
+#define RTSP_MAX_CLIENT_COUNT 2 //potentially gaze, imu, eyes, world - currently gaze and world only
 #define RTSP_CLIENT_VERBOSITY_LEVEL 1 // by default, print verbose output from each "RTSPClient"
-static std::atomic<unsigned> rtspClientStatus[RTSP_MAX_CLIENT_COUNT];
+static std::atomic<unsigned> rtspClientStatus[RTSP_MAX_CLIENT_COUNT] = { 0 };
 
-static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, StreamId id) {
+static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, unsigned int id, RawDataCallback dataCallback) {
 	// Begin by creating a "RTSPClient" object.  Note that there is a separate "RTSPClient" object for each stream that we wish
 	// to receive (even if more than stream uses the same "rtsp://" URL).
-	RTSPClient* rtspClient = ourRTSPClient::createNew(env, rtspURL, id, RTSP_CLIENT_VERBOSITY_LEVEL, progName);
+	RTSPClient* rtspClient = ourRTSPClient::createNew(env, rtspURL, id, dataCallback, RTSP_CLIENT_VERBOSITY_LEVEL, progName);
 	if (rtspClient == NULL) {
 		env << "Failed to create a RTSP client for URL \"" << rtspURL << "\": " << env.getResultMsg() << "\n";
 		return NULL;
@@ -265,7 +268,8 @@ static void setupNextSubsession(RTSPClient* rtspClient) {
 static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* resultString) {
 	do {
 		UsageEnvironment& env = rtspClient->envir(); // alias
-		StreamClientState& scs = ((ourRTSPClient*)rtspClient)->scs; // alias
+		ourRTSPClient* oRtspClient = (ourRTSPClient*)rtspClient;
+		StreamClientState& scs = oRtspClient->scs; // alias
 
 		if (resultCode != 0) {
 			env << *rtspClient << "Failed to set up the \"" << *scs.subsession << "\" subsession: " << resultString << "\n";
@@ -285,7 +289,7 @@ static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* res
 		// (This will prepare the data sink to receive data; the actual flow of data from the client won't start happening until later,
 		// after we've sent a RTSP "PLAY" command.)
 
-		scs.subsession->sink = DummySink::createNew(env, *scs.subsession, rtspClient->url());
+		scs.subsession->sink = CallbackSink::createNew(env, *scs.subsession, oRtspClient->dataCallback, rtspClient->url());
 		// perhaps use your own custom "MediaSink" subclass instead
 		if (scs.subsession->sink == NULL) {
 			env << *rtspClient << "Failed to create a data sink for the \"" << *scs.subsession
@@ -438,15 +442,16 @@ static void shutdownStream(RTSPClient* rtspClient, int exitCode) {
 
 // Implementation of "ourRTSPClient":
 
-ourRTSPClient* ourRTSPClient::createNew(UsageEnvironment& env, char const* rtspURL, unsigned id,
+ourRTSPClient* ourRTSPClient::createNew(UsageEnvironment& env, char const* rtspURL, unsigned id, RawDataCallback dataCallback,
 	int verbosityLevel, char const* applicationName, portNumBits tunnelOverHTTPPortNum) {
-	return new ourRTSPClient(env, rtspURL, id, verbosityLevel, applicationName, tunnelOverHTTPPortNum);
+	return new ourRTSPClient(env, rtspURL, id, dataCallback, verbosityLevel, applicationName, tunnelOverHTTPPortNum);
 }
 
-ourRTSPClient::ourRTSPClient(UsageEnvironment& env, char const* rtspURL, unsigned id,
+ourRTSPClient::ourRTSPClient(UsageEnvironment& env, char const* rtspURL, unsigned id, RawDataCallback dataCallback,
 	int verbosityLevel, char const* applicationName, portNumBits tunnelOverHTTPPortNum)
 	: RTSPClient(env, rtspURL, verbosityLevel, applicationName, tunnelOverHTTPPortNum, -1) {
 	this->id = id;
+	this->dataCallback = dataCallback;
 }
 
 ourRTSPClient::~ourRTSPClient() {
@@ -477,45 +482,37 @@ StreamClientState::~StreamClientState() {
 // Define the size of the buffer that we'll use:
 #define DUMMY_SINK_RECEIVE_BUFFER_SIZE 100000
 
-DummySink* DummySink::createNew(UsageEnvironment& env, MediaSubsession& subsession, char const* streamId) {
-	return new DummySink(env, subsession, streamId);
+CallbackSink* CallbackSink::createNew(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, char const* streamId) {
+	return new CallbackSink(env, subsession, dataCallback, streamId);
 }
 
-DummySink::DummySink(UsageEnvironment& env, MediaSubsession& subsession, char const* streamId)
+CallbackSink::CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, char const* streamId)
 	: MediaSink(env),
 	fSubsession(subsession) {
 	fStreamId = strDup(streamId);
 	fReceiveBuffer = new u_int8_t[DUMMY_SINK_RECEIVE_BUFFER_SIZE];
+	this->dataCallback = dataCallback;
 }
 
-DummySink::~DummySink() {
+CallbackSink::~CallbackSink() {
 	delete[] fReceiveBuffer;
 	delete[] fStreamId;
 }
 
-void DummySink::afterGettingFrame(void* clientData, unsigned frameSize, unsigned numTruncatedBytes,
+void CallbackSink::afterGettingFrame(void* clientData, unsigned frameSize, unsigned numTruncatedBytes,
 	struct timeval presentationTime, unsigned durationInMicroseconds) {
-	DummySink* sink = (DummySink*)clientData;
+	CallbackSink* sink = (CallbackSink*)clientData;
 	sink->afterGettingFrame(frameSize, numTruncatedBytes, presentationTime, durationInMicroseconds);
 }
-
-static float gazePoint[2];
-static std::mutex gazePointMtx;
 
 // If you don't want to see debugging output for each received frame, then comment out the following line:
 // #define DEBUG_PRINT_EACH_RECEIVED_FRAME 1
 
-void DummySink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBytes,
+void CallbackSink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBytes,
 	struct timeval presentationTime, unsigned /*durationInMicroseconds*/) {
 	// We've just received a frame of data.  (Optionally) print out information about it:
 
-	if (fSubsession.rtpPayloadFormat() == 99)
-	{
-		gazePointMtx.lock();
-		gazePoint[0] = bytesToFloat(&fReceiveBuffer[0]);
-		gazePoint[1] = bytesToFloat(&fReceiveBuffer[4]);
-		gazePointMtx.unlock();
-	}
+	dataCallback(presentationTime.tv_sec * 1000ll + presentationTime.tv_usec / 1000, frameSize, fReceiveBuffer);
 
 #ifdef DEBUG_PRINT_EACH_RECEIVED_FRAME
 	if (fStreamId != NULL) envir() << "Stream \"" << fStreamId << "\"; ";
@@ -537,7 +534,7 @@ void DummySink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBytes
 	continuePlaying();
 }
 
-Boolean DummySink::continuePlaying() {
+Boolean CallbackSink::continuePlaying() {
 	if (fSource == NULL) return False; // sanity check (should not happen)
 
 	// Request the next frame of data from our input source.  "afterGettingFrame()" will get called later, when it arrives:
@@ -551,11 +548,12 @@ class RTSPClientService
 {
 public:
 	~RTSPClientService();
-	void Start(const char* gazeUrl, LogCallback callback);
+	void Start(const char* baseUrl, LogCallback logCallback, RawDataCallback gazeCallback, RawDataCallback worldCallback);
 	void Stop();
 
 private:
-	std::string gazeUrl;
+	std::string baseUrl; //rtsp://192.168.1.27:8086
+	RawDataCallback dataCallbacks[RTSP_MAX_CLIENT_COUNT] = { NULL };
 	TaskScheduler* scheduler = NULL;
 	UsageEnvironment* env = NULL;
 	volatile char watchVariable = 0;
@@ -569,15 +567,17 @@ RTSPClientService::~RTSPClientService()
 	Stop();
 }
 
-void RTSPClientService::Start(const char* gazeUrl, LogCallback callback)
+void RTSPClientService::Start(const char* baseUrl, LogCallback logCallback, RawDataCallback gazeCallback, RawDataCallback worldCallback)
 {
 	if (workerThread.joinable()) {
 		Stop();
 	}
-	this->gazeUrl = std::string(gazeUrl);
+	this->baseUrl = std::string(baseUrl);
+	this->dataCallbacks[StreamId::GAZE] = gazeCallback;
+	this->dataCallbacks[StreamId::WORLD] = worldCallback;
 	watchVariable = 0;
 	scheduler = BasicTaskScheduler::createNew();
-	env = LoggingUsageEnvironment::createNew(*scheduler, callback);
+	env = LoggingUsageEnvironment::createNew(*scheduler, logCallback);
 	workerThread = std::thread(&RTSPClientService::DoWork, this);
 }
 
@@ -600,13 +600,25 @@ void RTSPClientService::Stop()
 
 void RTSPClientService::DoWork()
 {
-	RTSPClient* client = openURL(*env, "Live555RTSPClient", gazeUrl.c_str(), StreamId::GAZE);
-	env->taskScheduler().doEventLoop(&watchVariable);
-	unsigned clientStatus = rtspClientStatus[StreamId::GAZE];
-	if (clientStatus != StreamStatus::UNINITIALIZED && clientStatus != StreamStatus::SHUTDOWN) {
-		shutdownStream(client);
+	const char* urlParameters[RTSP_MAX_CLIENT_COUNT] = { "/?camera=gaze&audioenable=off", "/?camera=world&audioenable=off" };
+	RTSPClient* clients[RTSP_MAX_CLIENT_COUNT] = { NULL };
+	for (size_t i = 0; i < RTSP_MAX_CLIENT_COUNT; i++)
+	{
+		if (dataCallbacks[i] != NULL) {
+			clients[i] = openURL(*env, "Live555RTSPClient", (baseUrl + urlParameters[i]).c_str(), i, dataCallbacks[i]);
+		}
 	}
-	client = NULL;
+
+	env->taskScheduler().doEventLoop(&watchVariable);
+
+	for (size_t i = 0; i < RTSP_MAX_CLIENT_COUNT; i++)
+	{
+		unsigned clientStatus = rtspClientStatus[i];
+		if (clientStatus != StreamStatus::UNINITIALIZED && clientStatus != StreamStatus::SHUTDOWN) {
+			shutdownStream(clients[i]);
+		}
+		clients[i] = NULL;
+	}
 }
 
 static bool isLittleEndian() {
@@ -638,16 +650,11 @@ static float bytesToFloat(const u_int8_t* bytes) {
 
 static RTSPClientService service;
 
-void CStart(const char* url, LogCallback callback) {
-	service.Start(url, callback);
+void CStart(const char* url, LogCallback logCallback, RawDataCallback gazeCallback, RawDataCallback worldCallback) {
+	service.Start(url, logCallback, gazeCallback, worldCallback);
 }
 
 void CStop() {
 	service.Stop();
 }
 
-void CGetGazePoint(float* out) {
-	gazePointMtx.lock();
-	memcpy(out, gazePoint, sizeof(gazePoint));
-	gazePointMtx.unlock();
-}
