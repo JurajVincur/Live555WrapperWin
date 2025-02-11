@@ -25,10 +25,13 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 #include <thread>
 #include <mutex>
 #include "RTSPService.hh"
+#include <vector>
+
+typedef std::vector<uint8_t>(*DataPostprocessor)(const unsigned int size, const u_int8_t* unit);
 
 enum StreamId {
-	GAZE = 0,
-	WORLD = 1
+	SID_GAZE = 0,
+	SID_WORLD = 1
 };
 
 enum StreamStatus {
@@ -40,9 +43,15 @@ enum StreamStatus {
 	SHUTDOWN = 5
 };
 
+enum RTPPayloadFormat {
+	PF_GAZE = 99,
+	PF_WORLD = 96
+};
+
 // Forward function definitions:
 static float bytesToFloat(const u_int8_t* bytes);
 static bool isLittleEndian();
+static std::vector<uint8_t> processNalUnit(const unsigned int size, const u_int8_t* unit);
 
 // RTSP 'response handlers':
 static void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* resultString);
@@ -130,10 +139,11 @@ public:
 	static CallbackSink* createNew(UsageEnvironment& env,
 		MediaSubsession& subsession, // identifies the kind of data that's being received
 		RawDataCallback dataCallback,
+		DataPostprocessor dataPostprocessor,
 		char const* streamId = NULL); // identifies the stream itself (optional)
 
 private:
-	CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, char const* streamId);
+	CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, DataPostprocessor dataPostprocessor, char const* streamId);
 	// called only by "createNew()"
 	virtual ~CallbackSink();
 
@@ -148,6 +158,7 @@ private:
 	// redefined virtual functions:
 	virtual Boolean continuePlaying();
 	RawDataCallback dataCallback;
+	DataPostprocessor dataPostprocessor;
 
 private:
 	u_int8_t* fReceiveBuffer;
@@ -289,7 +300,26 @@ static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* res
 		// (This will prepare the data sink to receive data; the actual flow of data from the client won't start happening until later,
 		// after we've sent a RTSP "PLAY" command.)
 
-		scs.subsession->sink = CallbackSink::createNew(env, *scs.subsession, oRtspClient->dataCallback, rtspClient->url());
+		DataPostprocessor dataPostprocessor = NULL;
+		switch (scs.subsession->rtpPayloadFormat())
+		{
+		case(RTPPayloadFormat::PF_GAZE):
+			break;
+		case(RTPPayloadFormat::PF_WORLD):
+			//send SPS and PPS first
+			unsigned int n;
+			SPropRecord* record = parseSPropParameterSets(scs.subsession->fmtp_spropparametersets(), n);
+			for (size_t i = 0; i < n; i++)
+			{
+				std::vector<uint8_t> processed = processNalUnit(record[i].sPropLength, record[i].sPropBytes);
+				oRtspClient->dataCallback(0, processed.size(), processed.data());
+			}
+			delete[] record;
+			dataPostprocessor = processNalUnit;
+			break;
+		}
+
+		scs.subsession->sink = CallbackSink::createNew(env, *scs.subsession, oRtspClient->dataCallback, dataPostprocessor, rtspClient->url());
 		// perhaps use your own custom "MediaSink" subclass instead
 		if (scs.subsession->sink == NULL) {
 			env << *rtspClient << "Failed to create a data sink for the \"" << *scs.subsession
@@ -476,22 +506,23 @@ StreamClientState::~StreamClientState() {
 }
 
 
-// Implementation of "DummySink":
+// Implementation of "CallbackSink":
 
 // Even though we're not going to be doing anything with the incoming data, we still need to receive it.
 // Define the size of the buffer that we'll use:
-#define DUMMY_SINK_RECEIVE_BUFFER_SIZE 100000
+#define CALLBACK_SINK_RECEIVE_BUFFER_SIZE 100000
 
-CallbackSink* CallbackSink::createNew(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, char const* streamId) {
-	return new CallbackSink(env, subsession, dataCallback, streamId);
+CallbackSink* CallbackSink::createNew(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, DataPostprocessor dataPostprocessor, char const* streamId) {
+	return new CallbackSink(env, subsession, dataCallback, dataPostprocessor, streamId);
 }
 
-CallbackSink::CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, char const* streamId)
+CallbackSink::CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, DataPostprocessor dataPostprocessor, char const* streamId)
 	: MediaSink(env),
 	fSubsession(subsession) {
 	fStreamId = strDup(streamId);
-	fReceiveBuffer = new u_int8_t[DUMMY_SINK_RECEIVE_BUFFER_SIZE];
+	fReceiveBuffer = new u_int8_t[CALLBACK_SINK_RECEIVE_BUFFER_SIZE];
 	this->dataCallback = dataCallback;
+	this->dataPostprocessor = dataPostprocessor;
 }
 
 CallbackSink::~CallbackSink() {
@@ -512,6 +543,11 @@ void CallbackSink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBy
 	struct timeval presentationTime, unsigned /*durationInMicroseconds*/) {
 	// We've just received a frame of data.  (Optionally) print out information about it:
 
+	if (dataPostprocessor != NULL) {
+		std::vector<uint8_t> processed = dataPostprocessor(frameSize, fReceiveBuffer);
+		frameSize = processed.size();
+		std::copy(processed.begin(), processed.end(), fReceiveBuffer);
+	}
 	dataCallback(presentationTime.tv_sec * 1000ll + presentationTime.tv_usec / 1000, frameSize, fReceiveBuffer);
 
 #ifdef DEBUG_PRINT_EACH_RECEIVED_FRAME
@@ -538,7 +574,7 @@ Boolean CallbackSink::continuePlaying() {
 	if (fSource == NULL) return False; // sanity check (should not happen)
 
 	// Request the next frame of data from our input source.  "afterGettingFrame()" will get called later, when it arrives:
-	fSource->getNextFrame(fReceiveBuffer, DUMMY_SINK_RECEIVE_BUFFER_SIZE,
+	fSource->getNextFrame(fReceiveBuffer, CALLBACK_SINK_RECEIVE_BUFFER_SIZE,
 		afterGettingFrame, this,
 		onSourceClosure, this);
 	return True;
@@ -573,8 +609,8 @@ void RTSPClientService::Start(const char* baseUrl, LogCallback logCallback, RawD
 		Stop();
 	}
 	this->baseUrl = std::string(baseUrl);
-	this->dataCallbacks[StreamId::GAZE] = gazeCallback;
-	this->dataCallbacks[StreamId::WORLD] = worldCallback;
+	this->dataCallbacks[StreamId::SID_GAZE] = gazeCallback;
+	this->dataCallbacks[StreamId::SID_WORLD] = worldCallback;
 	watchVariable = 0;
 	scheduler = BasicTaskScheduler::createNew();
 	env = LoggingUsageEnvironment::createNew(*scheduler, logCallback);
@@ -623,8 +659,8 @@ void RTSPClientService::DoWork()
 
 static bool isLittleEndian() {
 	uint16_t number = 1; //0x0001
-	uint8_t* first_byte = (uint8_t*)&number;
-	return first_byte[0] == 1;
+	uint8_t* firstByte = (uint8_t*)&number;
+	return firstByte[0] == 1;
 }
 
 static float bytesToFloat(const u_int8_t* bytes) {
@@ -645,6 +681,55 @@ static float bytesToFloat(const u_int8_t* bytes) {
 	}
 
 	std::memcpy(&result, reorderedBytes, sizeof(result));
+	return result;
+}
+
+static std::vector<uint8_t> processNalUnit(const unsigned int size, const u_int8_t* unit) {
+	const uint8_t startCode[4] = { 0x00, 0x00, 0x00, 0x01 };
+	std::vector<uint8_t> result(startCode, startCode + sizeof(startCode));
+	size_t offset = 0;
+
+	uint8_t firstByte = unit[0];
+
+	// Check forbidden_zero_bit (first bit of the first byte must be 0)
+	bool isFirstBitOne = firstByte & 0b10000000;
+	if (isFirstBitOne) {
+		throw std::invalid_argument("First bit must be zero (forbidden_zero_bit)");
+	}
+
+	// Extract the NAL type (lower 5 bits of the first byte)
+	uint8_t nalType = firstByte & 0b00011111;
+
+	if (nalType == 28) {
+		// Fragmentation Unit (FU-A)
+		// Ensure the unit is long enough to have a second byte (FU header)
+		if (size < 2) {
+			throw std::invalid_argument("NAL unit too short for FU-A header");
+		}
+
+		uint8_t fuHeader = unit[1];
+		offset = 2;  // Skip first two bytes (NAL header and FU header)
+
+		// Check the Start bit of the FU header (bit 8 of the second byte)
+		bool isFuStartBitOne = fuHeader & 0b10000000;
+
+		if (isFuStartBitOne) {
+			// Reconstruct the original NAL unit header from the FU-A headers
+			uint8_t firstByteBits1to3 = firstByte & 0b11100000;   // First 3 bits of the original NAL unit
+			uint8_t fuHeaderBits4to8 = fuHeader & 0b00011111;     // Last 5 bits of FU header (original NAL type)
+
+			uint8_t reconstructedHeader = firstByteBits1to3 | fuHeaderBits4to8;
+			result.push_back(reconstructedHeader);  // Append the reconstructed NAL header to the start code
+		}
+		else {
+			// Do not prepend the start code, we are in the middle of a fragmented NAL unit
+			result.clear();
+		}
+	}
+
+	// Append the rest of the payload (after the FU headers) to the start code (or directly if no FU)
+	result.insert(result.end(), unit + offset, unit + size);
+
 	return result;
 }
 
