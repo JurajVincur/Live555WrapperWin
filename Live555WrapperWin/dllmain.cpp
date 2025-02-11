@@ -27,7 +27,7 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 #include "RTSPService.hh"
 #include <vector>
 
-typedef std::vector<uint8_t>(*DataPostprocessor)(const unsigned int size, const u_int8_t* unit);
+typedef std::vector<u_int8_t>(*DataPostprocessor)(const unsigned int size, const u_int8_t* unit);
 
 enum StreamId {
 	SID_GAZE = 0,
@@ -51,7 +51,7 @@ enum RTPPayloadFormat {
 // Forward function definitions:
 static float bytesToFloat(const u_int8_t* bytes);
 static bool isLittleEndian();
-static std::vector<uint8_t> processNalUnit(const unsigned int size, const u_int8_t* unit);
+static std::vector<u_int8_t> processNalUnit(const unsigned int size, const u_int8_t* unit);
 
 // RTSP 'response handlers':
 static void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* resultString);
@@ -311,7 +311,7 @@ static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* res
 			SPropRecord* record = parseSPropParameterSets(scs.subsession->fmtp_spropparametersets(), n);
 			for (size_t i = 0; i < n; i++)
 			{
-				std::vector<uint8_t> processed = processNalUnit(record[i].sPropLength, record[i].sPropBytes);
+				std::vector<u_int8_t> processed = processNalUnit(record[i].sPropLength, record[i].sPropBytes);
 				oRtspClient->dataCallback(0, processed.size(), processed.data());
 			}
 			delete[] record;
@@ -544,7 +544,7 @@ void CallbackSink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBy
 	// We've just received a frame of data.  (Optionally) print out information about it:
 
 	if (dataPostprocessor != NULL) {
-		std::vector<uint8_t> processed = dataPostprocessor(frameSize, fReceiveBuffer);
+		std::vector<u_int8_t> processed = dataPostprocessor(frameSize, fReceiveBuffer);
 		frameSize = processed.size();
 		std::copy(processed.begin(), processed.end(), fReceiveBuffer);
 	}
@@ -659,7 +659,7 @@ void RTSPClientService::DoWork()
 
 static bool isLittleEndian() {
 	uint16_t number = 1; //0x0001
-	uint8_t* firstByte = (uint8_t*)&number;
+	u_int8_t* firstByte = (u_int8_t*)&number;
 	return firstByte[0] == 1;
 }
 
@@ -684,12 +684,12 @@ static float bytesToFloat(const u_int8_t* bytes) {
 	return result;
 }
 
-static std::vector<uint8_t> processNalUnit(const unsigned int size, const u_int8_t* unit) {
-	const uint8_t startCode[4] = { 0x00, 0x00, 0x00, 0x01 };
-	std::vector<uint8_t> result(startCode, startCode + sizeof(startCode));
+static std::vector<u_int8_t> processNalUnit(const unsigned int size, const u_int8_t* unit) {
+	const u_int8_t startCode[4] = { 0x00, 0x00, 0x00, 0x01 };
+	std::vector<u_int8_t> result(startCode, startCode + sizeof(startCode));
 	size_t offset = 0;
 
-	uint8_t firstByte = unit[0];
+	u_int8_t firstByte = unit[0];
 
 	// Check forbidden_zero_bit (first bit of the first byte must be 0)
 	bool isFirstBitOne = firstByte & 0b10000000;
@@ -698,7 +698,7 @@ static std::vector<uint8_t> processNalUnit(const unsigned int size, const u_int8
 	}
 
 	// Extract the NAL type (lower 5 bits of the first byte)
-	uint8_t nalType = firstByte & 0b00011111;
+	u_int8_t nalType = firstByte & 0b00011111;
 
 	if (nalType == 28) {
 		// Fragmentation Unit (FU-A)
@@ -707,7 +707,7 @@ static std::vector<uint8_t> processNalUnit(const unsigned int size, const u_int8
 			throw std::invalid_argument("NAL unit too short for FU-A header");
 		}
 
-		uint8_t fuHeader = unit[1];
+		u_int8_t fuHeader = unit[1];
 		offset = 2;  // Skip first two bytes (NAL header and FU header)
 
 		// Check the Start bit of the FU header (bit 8 of the second byte)
@@ -715,10 +715,10 @@ static std::vector<uint8_t> processNalUnit(const unsigned int size, const u_int8
 
 		if (isFuStartBitOne) {
 			// Reconstruct the original NAL unit header from the FU-A headers
-			uint8_t firstByteBits1to3 = firstByte & 0b11100000;   // First 3 bits of the original NAL unit
-			uint8_t fuHeaderBits4to8 = fuHeader & 0b00011111;     // Last 5 bits of FU header (original NAL type)
+			u_int8_t firstByteBits1to3 = firstByte & 0b11100000;   // First 3 bits of the original NAL unit
+			u_int8_t fuHeaderBits4to8 = fuHeader & 0b00011111;     // Last 5 bits of FU header (original NAL type)
 
-			uint8_t reconstructedHeader = firstByteBits1to3 | fuHeaderBits4to8;
+			u_int8_t reconstructedHeader = firstByteBits1to3 | fuHeaderBits4to8;
 			result.push_back(reconstructedHeader);  // Append the reconstructed NAL header to the start code
 		}
 		else {
