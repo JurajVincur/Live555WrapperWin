@@ -203,18 +203,9 @@ class NeonClient:
 if __name__=="__main__":
     import cv2
     from av.codec import CodecContext
-    from pupil_labs.realtime_api.streaming.nal_unit import extract_payload_from_nal_unit
-    import base64
     import struct
+    
     codec = CodecContext.create("h264", "r")
-    params = (
-        base64.b64decode(param) for param in "Z0KAH9oBkAl6UgoEBA2hQmo=,aM4G8g==".split(",") #TODO
-    )
-    sprop_parameter_set_payloads = [
-        extract_payload_from_nal_unit(param) for param in params
-    ]
-    for param in sprop_parameter_set_payloads:
-        codec.parse(param)
     
     matcher = MatchingConsumer()
     def logCallback(message):
@@ -239,7 +230,7 @@ if __name__=="__main__":
         while(True):
             frameData, gazeData = matcher.next_match()
             if frameData is not None:
-                packets = codec.parse(extract_payload_from_nal_unit(frameData[1]))
+                packets = codec.parse(frameData[1])
                 frame = None
                 for packet in packets:
                     frames = codec.decode(packet)
@@ -257,4 +248,114 @@ if __name__=="__main__":
         pass
     
     nc.stop()
+```
+
+## C++ test program - frame and gaze (no sync)
+```cpp
+#include <opencv2/opencv.hpp>
+#include <RTSPService.hh>
+#include <concurrent_queue.h>
+
+extern "C"
+{
+#include<libswscale/swscale.h>
+#include<libavcodec/avcodec.h>
+}
+
+static float gazePoint[2];
+static std::mutex gazePointMutex;
+static Concurrency::concurrent_queue<std::vector<u_int8_t>> videoQueue;
+
+void logCallback(const char* message) {
+	std::cout << message;
+}
+
+void gazeCallback(int64_t timestampMs, unsigned int dataSize, const u_int8_t* data) {
+	gazePointMutex.lock();
+	CBytesToGazePoint(data, gazePoint);
+	gazePointMutex.unlock();
+	std::cout << "RECEIVED GAZE DATA AT: " << timestampMs << std::endl;
+}
+
+void videoCallback(int64_t timestampMs, unsigned int dataSize, const u_int8_t* data) {
+	std::vector<u_int8_t> v(data, data + dataSize);
+	videoQueue.push(v);
+	std::cout << "RECEIVED VIDEO DATA AT: " << timestampMs << std::endl;
+}
+
+cv::Mat avframeToCvmat(const AVFrame* frame) {
+	int width = frame->width;
+	int height = frame->height;
+	cv::Mat image(height, width, CV_8UC3);
+	int cvLinesizes[1];
+	cvLinesizes[0] = image.step1();
+	SwsContext* conversion = sws_getContext(
+		width, height, (AVPixelFormat)frame->format, width, height,
+		AVPixelFormat::AV_PIX_FMT_BGR24, SWS_FAST_BILINEAR, NULL, NULL, NULL);
+	sws_scale(conversion, frame->data, frame->linesize, 0, height, &image.data,
+		cvLinesizes);
+	sws_freeContext(conversion);
+	return image;
+}
+
+int main() {
+
+	int gpRadius = 20;
+	cv::Scalar gpColor(0, 0, 255);
+	int gpThickness = 2;
+
+	CStart("rtsp://192.168.1.27:8086", logCallback, gazeCallback, videoCallback);
+
+	const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+	if (!codec) {
+		return -1;
+	}
+	AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
+	if (!codec_ctx) {
+		return -1;
+	}
+	if (avcodec_open2(codec_ctx, codec, NULL) < 0) {
+		avcodec_free_context(&codec_ctx);
+		return -1;
+	}
+	AVPacket* packet = av_packet_alloc();
+	AVFrame* frame = av_frame_alloc();
+
+	while (true) {
+
+		std::vector<u_int8_t> unit;
+		if (videoQueue.try_pop(unit) == false) {
+			continue;
+		}
+		packet->data = unit.data();
+		packet->size = unit.size();
+
+		int ret = avcodec_send_packet(codec_ctx, packet);
+		if (ret < 0) {
+			continue;
+		}
+
+		ret = avcodec_receive_frame(codec_ctx, frame);
+		if (ret == 0) {
+			cv::Mat cvFrame = avframeToCvmat(frame);
+			gazePointMutex.lock();
+			cv::Point gp(static_cast<int>(gazePoint[0]), static_cast<int>(gazePoint[1]));
+			gazePointMutex.unlock();
+			cv::circle(cvFrame, gp, gpRadius, gpColor, gpThickness);
+			cv::imshow("World and gaze", cvFrame);
+		}
+
+		if (cv::waitKey(10) >= 0)
+			break;
+	}
+
+	av_packet_free(&packet);
+	av_frame_free(&frame);
+	avcodec_free_context(&codec_ctx);
+	cv::destroyAllWindows();
+
+	CStop();
+
+	return 0;
+}
 ```
