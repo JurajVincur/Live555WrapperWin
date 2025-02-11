@@ -743,3 +743,8 @@ void CStop() {
 	service.Stop();
 }
 
+void CBytesToGazePoint(const u_int8_t* bytes, float* out) {
+	out[0] = bytesToFloat(&bytes[0]);
+	out[1] = bytesToFloat(&bytes[4]);
+}
+
