@@ -1,9 +1,13 @@
 #pragma once
 
+#ifdef __ANDROID__
+#define LIVE555WRAPPERWIN_API ""
+#else
 #ifdef LIVE555WRAPPERWIN_EXPORTS
 #define LIVE555WRAPPERWIN_API __declspec(dllexport)
 #else
 #define LIVE555WRAPPERWIN_API __declspec(dllimport)
+#endif
 #endif
 
 typedef unsigned char u_int8_t;

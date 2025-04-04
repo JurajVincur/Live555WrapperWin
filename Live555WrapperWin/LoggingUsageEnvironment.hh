@@ -1,11 +1,5 @@
 #pragma once
 
-#ifdef LIVE555WRAPPERWIN_EXPORTS
-#define LIVE555WRAPPERWIN_API __declspec(dllexport)
-#else
-#define LIVE555WRAPPERWIN_API __declspec(dllimport)
-#endif
-
 #include "BasicUsageEnvironment.hh"
 #include "RTSPService.hh"
 

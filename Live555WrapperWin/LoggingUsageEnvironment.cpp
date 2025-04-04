@@ -16,7 +16,11 @@ void LoggingUsageEnvironment::writeFormatted(const char* format, ...) {
 				bufferOffset = 0;
 				callback(buffer);
 			}
+#ifdef __ANDROID__
+			bufferOffset += vsprintf(buffer + bufferOffset, format, args);
+#else
 			bufferOffset += vsprintf_s(buffer + bufferOffset, BUFFER_SIZE - bufferOffset, format, args);
+#endif
 			if (buffer[bufferOffset - 1] == '\n') { //flush each line
 				bufferOffset = 0;
 				callback(buffer);
