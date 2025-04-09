@@ -306,6 +306,12 @@ static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* res
 		case(RTPPayloadFormat::PF_GAZE):
 			break;
 		case(RTPPayloadFormat::PF_WORLD):
+		{
+			std::string codecName = scs.subsession->codecName();
+			if (codecName != "H264") {
+				continue;
+			}
+
 			//send SPS and PPS first
 			unsigned int n;
 			SPropRecord* record = parseSPropParameterSets(scs.subsession->fmtp_spropparametersets(), n);
@@ -317,6 +323,9 @@ static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* res
 			delete[] record;
 			dataPostprocessor = processNalUnit;
 			break;
+		}
+		default: //not supported
+			continue;
 		}
 
 		scs.subsession->sink = CallbackSink::createNew(env, *scs.subsession, oRtspClient->dataCallback, dataPostprocessor, rtspClient->url());
