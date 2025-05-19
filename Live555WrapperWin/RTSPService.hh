@@ -12,8 +12,9 @@
 
 typedef unsigned char u_int8_t;
 typedef void (*LogCallback)(const char* message);
-typedef void (*RawDataCallback)(int64_t timestampMs, unsigned int dataSize, const u_int8_t* data);
+typedef void (*RawDataCallback)(int64_t timestampMs, u_int8_t streamId, u_int8_t payloadFormat, unsigned int dataSize, const u_int8_t* data);
 
 extern "C" LIVE555WRAPPERWIN_API void CBytesToGazePoint(const u_int8_t* bytes, float* out);
-extern "C" LIVE555WRAPPERWIN_API void CStart(const char* url, LogCallback callback, RawDataCallback gazeCallback, RawDataCallback worldCallback);
+extern "C" LIVE555WRAPPERWIN_API short CStartWorker(const char* url, u_int8_t streamMask, LogCallback logCallback, RawDataCallback dataCallback);
+extern "C" LIVE555WRAPPERWIN_API void CStopWorker(u_int8_t id);
 extern "C" LIVE555WRAPPERWIN_API void CStop();
