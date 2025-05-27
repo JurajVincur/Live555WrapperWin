@@ -27,31 +27,10 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 #include "RTSPService.hh"
 #include <vector>
 
-typedef std::vector<u_int8_t>(*DataPostprocessor)(const unsigned int size, const u_int8_t* unit);
-
-enum StreamId {
-	SID_GAZE = 0,
-	SID_WORLD = 1
-};
-
-enum StreamStatus {
-	UNINITIALIZED = 0,
-	CLIENT_CREATED = 1,
-	DESCRIBE_SUCCESS = 2,
-	SETUP_SUCCESS = 3,
-	PLAY_SUCCESS = 4,
-	SHUTDOWN = 5
-};
-
-enum RTPPayloadFormat {
-	PF_GAZE = 99,
-	PF_WORLD = 96
-};
+typedef std::vector<u_int8_t>(*DataPostprocessor)(unsigned int size, const u_int8_t* unit);
 
 // Forward function definitions:
-static float bytesToFloat(const u_int8_t* bytes);
-static bool isLittleEndian();
-static std::vector<u_int8_t> processNalUnit(const unsigned int size, const u_int8_t* unit);
+static std::vector<u_int8_t> processNalUnit(unsigned int size, const u_int8_t* unit);
 
 // RTSP 'response handlers':
 static void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* resultString);
@@ -66,7 +45,7 @@ static void streamTimerHandler(void* clientData);
 // called at the end of a stream's expected duration (if the stream has not already signaled its end using a RTCP "BYE")
 
 // The main streaming routine (for each "rtsp://" URL):
-static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, unsigned int id, RawDataCallback dataCallback);
+static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, u_int8_t id, std::atomic<char>& statusRef, RawDataCallback dataCallback);
 
 // Used to iterate through each stream's 'subsessions', setting up each one:
 static void setupNextSubsession(RTSPClient* rtspClient);
@@ -83,13 +62,6 @@ UsageEnvironment& operator<<(UsageEnvironment& env, const RTSPClient& rtspClient
 UsageEnvironment& operator<<(UsageEnvironment& env, const MediaSubsession& subsession) {
 	return env << subsession.mediumName() << "/" << subsession.codecName();
 }
-
-/*
-void usage(UsageEnvironment& env, char const* progName) {
-	env << "Usage: " << progName << " <rtsp-url-1> ... <rtsp-url-N>\n";
-	env << "\t(where each <rtsp-url-i> is a \"rtsp://\" URL)\n";
-}
-*/
 
 // Define a class to hold per-stream state that we maintain throughout each stream's lifetime:
 
@@ -113,21 +85,22 @@ public:
 
 class ourRTSPClient : public RTSPClient {
 public:
-	static ourRTSPClient* createNew(UsageEnvironment& env, char const* rtspURL, unsigned id, RawDataCallback dataCallback,
+	static ourRTSPClient* createNew(UsageEnvironment& env, char const* rtspURL, u_int8_t id, std::atomic<char>& statusRef, RawDataCallback dataCallback,
 		int verbosityLevel = 0,
 		char const* applicationName = NULL,
 		portNumBits tunnelOverHTTPPortNum = 0);
 	RawDataCallback dataCallback = NULL;
 
 protected:
-	ourRTSPClient(UsageEnvironment& env, char const* rtspURL, unsigned id, RawDataCallback dataCallback,
+	ourRTSPClient(UsageEnvironment& env, char const* rtspURL, u_int8_t id, std::atomic<char>& statusRef, RawDataCallback dataCallback,
 		int verbosityLevel, char const* applicationName, portNumBits tunnelOverHTTPPortNum);
 	// called only by createNew();
 	virtual ~ourRTSPClient();
 
 public:
 	StreamClientState scs;
-	unsigned id;
+	const u_int8_t id = 0;
+	std::atomic<char>& statusRef;
 };
 
 // Define a data sink (a subclass of "MediaSink") to receive the data for each subsession (i.e., each audio or video 'substream').
@@ -140,10 +113,11 @@ public:
 		MediaSubsession& subsession, // identifies the kind of data that's being received
 		RawDataCallback dataCallback,
 		DataPostprocessor dataPostprocessor,
-		char const* streamId = NULL); // identifies the stream itself (optional)
+		u_int8_t streamId,
+		u_int8_t payloadFormat);
 
 private:
-	CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, DataPostprocessor dataPostprocessor, char const* streamId);
+	CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, DataPostprocessor dataPostprocessor, u_int8_t streamId, u_int8_t payloadFormat);
 	// called only by "createNew()"
 	virtual ~CallbackSink();
 
@@ -163,23 +137,24 @@ private:
 private:
 	u_int8_t* fReceiveBuffer;
 	MediaSubsession& fSubsession;
-	char* fStreamId;
+	const u_int8_t fStreamId;
+	const u_int8_t fPayloadFormat;
 };
 
-#define RTSP_MAX_CLIENT_COUNT 2 //potentially gaze, imu, eyes, world - currently gaze and world only
+#define RTSP_MAX_WORKER_COUNT 5
+#define RTSP_MAX_CLIENT_COUNT 5 //potentially gaze, imu, eyes, world - currently gaze and world only
 #define RTSP_CLIENT_VERBOSITY_LEVEL 1 // by default, print verbose output from each "RTSPClient"
-static std::atomic<unsigned> rtspClientStatus[RTSP_MAX_CLIENT_COUNT] = { 0 };
 
-static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, unsigned int id, RawDataCallback dataCallback) {
+static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char const* rtspURL, u_int8_t id, std::atomic<char>& statusRef, RawDataCallback dataCallback) {
 	// Begin by creating a "RTSPClient" object.  Note that there is a separate "RTSPClient" object for each stream that we wish
 	// to receive (even if more than stream uses the same "rtsp://" URL).
-	RTSPClient* rtspClient = ourRTSPClient::createNew(env, rtspURL, id, dataCallback, RTSP_CLIENT_VERBOSITY_LEVEL, progName);
+	ourRTSPClient* rtspClient = ourRTSPClient::createNew(env, rtspURL, id, statusRef, dataCallback, RTSP_CLIENT_VERBOSITY_LEVEL, progName);
 	if (rtspClient == NULL) {
 		env << "Failed to create a RTSP client for URL \"" << rtspURL << "\": " << env.getResultMsg() << "\n";
 		return NULL;
 	}
 
-	rtspClientStatus[((ourRTSPClient*)rtspClient)->id] = StreamStatus::CLIENT_CREATED;
+	rtspClient->statusRef = StreamStatus::SST_CLIENT_CREATED;
 
 	// Next, send a RTSP "DESCRIBE" command, to get a SDP description for the stream.
 	// Note that this command - like all RTSP commands - is sent asynchronously; we do not block, waiting for a response.
@@ -218,7 +193,7 @@ static void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* 
 			break;
 		}
 
-		rtspClientStatus[oRtspClient->id] = StreamStatus::DESCRIBE_SUCCESS;
+		oRtspClient->statusRef = StreamStatus::SST_DESCRIBE_SUCCESS;
 
 		// Then, create and set up our data source objects for the session.  We do this by iterating over the session's 'subsessions',
 		// calling "MediaSubsession::initiate()", and then sending a RTSP "SETUP" command, on each one.
@@ -263,7 +238,7 @@ static void setupNextSubsession(RTSPClient* rtspClient) {
 		return;
 	}
 
-	rtspClientStatus[oRtspClient->id] = StreamStatus::SETUP_SUCCESS;
+	oRtspClient->statusRef = StreamStatus::SST_SETUP_SUCCESS;
 
 	// We've finished setting up all of the subsessions.  Now, send a RTSP "PLAY" command to start the streaming:
 	if (scs.session->absStartTime() != NULL) {
@@ -301,11 +276,16 @@ static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* res
 		// after we've sent a RTSP "PLAY" command.)
 
 		DataPostprocessor dataPostprocessor = NULL;
-		switch (scs.subsession->rtpPayloadFormat())
+		const unsigned char payloadFormat = scs.subsession->rtpPayloadFormat();
+		const u_int8_t streamId = oRtspClient->id;
+		switch (payloadFormat)
 		{
+		case(RTPPayloadFormat::PF_AUDIO):
+		case(RTPPayloadFormat::PF_IMU):
 		case(RTPPayloadFormat::PF_GAZE):
+		case(RTPPayloadFormat::PF_EYE_EVENTS):
 			break;
-		case(RTPPayloadFormat::PF_WORLD):
+		case(RTPPayloadFormat::PF_VIDEO):
 		{
 			std::string codecName = scs.subsession->codecName();
 			if (codecName != "H264") {
@@ -318,17 +298,18 @@ static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* res
 			for (size_t i = 0; i < n; i++)
 			{
 				std::vector<u_int8_t> processed = processNalUnit(record[i].sPropLength, record[i].sPropBytes);
-				oRtspClient->dataCallback(0, processed.size(), processed.data());
+				oRtspClient->dataCallback(0, streamId, payloadFormat, processed.size(), processed.data());
 			}
 			delete[] record;
 			dataPostprocessor = processNalUnit;
 			break;
 		}
 		default: //not supported
+			//env << "Unsupported payload format: " << scs.subsession->rtpPayloadFormat() << " with codec name: " << scs.subsession->codecName() << "\n";
 			continue;
 		}
 
-		scs.subsession->sink = CallbackSink::createNew(env, *scs.subsession, oRtspClient->dataCallback, dataPostprocessor, rtspClient->url());
+		scs.subsession->sink = CallbackSink::createNew(env, *scs.subsession, oRtspClient->dataCallback, dataPostprocessor, streamId, payloadFormat);
 		// perhaps use your own custom "MediaSink" subclass instead
 		if (scs.subsession->sink == NULL) {
 			env << *rtspClient << "Failed to create a data sink for the \"" << *scs.subsession
@@ -381,7 +362,7 @@ static void continueAfterPLAY(RTSPClient* rtspClient, int resultCode, char* resu
 		}
 		env << "...\n";
 
-		rtspClientStatus[oRtspClient->id] = StreamStatus::PLAY_SUCCESS;
+		oRtspClient->statusRef = StreamStatus::SST_PLAY_SUCCESS;
 		success = True;
 	} while (0);
 	delete[] resultString;
@@ -471,7 +452,7 @@ static void shutdownStream(RTSPClient* rtspClient, int exitCode) {
 		}
 	}
 
-	rtspClientStatus[oRtspClient->id] = StreamStatus::SHUTDOWN;
+	oRtspClient->statusRef = StreamStatus::SST_SHUTDOWN;
 
 	env << *rtspClient << "Closing the stream.\n";
 	Medium::close(rtspClient);
@@ -481,15 +462,14 @@ static void shutdownStream(RTSPClient* rtspClient, int exitCode) {
 
 // Implementation of "ourRTSPClient":
 
-ourRTSPClient* ourRTSPClient::createNew(UsageEnvironment& env, char const* rtspURL, unsigned id, RawDataCallback dataCallback,
+ourRTSPClient* ourRTSPClient::createNew(UsageEnvironment& env, char const* rtspURL, u_int8_t id, std::atomic<char>& statusRef, RawDataCallback dataCallback,
 	int verbosityLevel, char const* applicationName, portNumBits tunnelOverHTTPPortNum) {
-	return new ourRTSPClient(env, rtspURL, id, dataCallback, verbosityLevel, applicationName, tunnelOverHTTPPortNum);
+	return new ourRTSPClient(env, rtspURL, id, statusRef, dataCallback, verbosityLevel, applicationName, tunnelOverHTTPPortNum);
 }
 
-ourRTSPClient::ourRTSPClient(UsageEnvironment& env, char const* rtspURL, unsigned id, RawDataCallback dataCallback,
+ourRTSPClient::ourRTSPClient(UsageEnvironment& env, char const* rtspURL, u_int8_t id, std::atomic<char>& statusRef, RawDataCallback dataCallback,
 	int verbosityLevel, char const* applicationName, portNumBits tunnelOverHTTPPortNum)
-	: RTSPClient(env, rtspURL, verbosityLevel, applicationName, tunnelOverHTTPPortNum, -1) {
-	this->id = id;
+	: RTSPClient(env, rtspURL, verbosityLevel, applicationName, tunnelOverHTTPPortNum, -1), statusRef(statusRef), id(id) {
 	this->dataCallback = dataCallback;
 }
 
@@ -521,14 +501,15 @@ StreamClientState::~StreamClientState() {
 // Define the size of the buffer that we'll use:
 #define CALLBACK_SINK_RECEIVE_BUFFER_SIZE 100000
 
-CallbackSink* CallbackSink::createNew(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, DataPostprocessor dataPostprocessor, char const* streamId) {
-	return new CallbackSink(env, subsession, dataCallback, dataPostprocessor, streamId);
+CallbackSink* CallbackSink::createNew(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, DataPostprocessor dataPostprocessor, u_int8_t streamId, u_int8_t payloadFormat) {
+	return new CallbackSink(env, subsession, dataCallback, dataPostprocessor, streamId, payloadFormat);
 }
 
-CallbackSink::CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, DataPostprocessor dataPostprocessor, char const* streamId)
+CallbackSink::CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, RawDataCallback dataCallback, DataPostprocessor dataPostprocessor, u_int8_t streamId, u_int8_t payloadFormat)
 	: MediaSink(env),
-	fSubsession(subsession) {
-	fStreamId = strDup(streamId);
+	fSubsession(subsession),
+	fStreamId(streamId),
+	fPayloadFormat(payloadFormat) {
 	fReceiveBuffer = new u_int8_t[CALLBACK_SINK_RECEIVE_BUFFER_SIZE];
 	this->dataCallback = dataCallback;
 	this->dataPostprocessor = dataPostprocessor;
@@ -536,7 +517,6 @@ CallbackSink::CallbackSink(UsageEnvironment& env, MediaSubsession& subsession, R
 
 CallbackSink::~CallbackSink() {
 	delete[] fReceiveBuffer;
-	delete[] fStreamId;
 }
 
 void CallbackSink::afterGettingFrame(void* clientData, unsigned frameSize, unsigned numTruncatedBytes,
@@ -554,7 +534,7 @@ void CallbackSink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBy
 		frameSize = processed.size();
 		std::copy(processed.begin(), processed.end(), fReceiveBuffer);
 	}
-	dataCallback(presentationTime.tv_sec * 1000ll + presentationTime.tv_usec / 1000, frameSize, fReceiveBuffer);
+	dataCallback(presentationTime.tv_sec * 1000ll + presentationTime.tv_usec / 1000, fStreamId, fPayloadFormat, frameSize, fReceiveBuffer);
 
 	// Then continue, to request the next frame of data:
 	continuePlaying();
@@ -570,44 +550,48 @@ Boolean CallbackSink::continuePlaying() {
 	return True;
 }
 
-class RTSPClientService
+class RTSPWorker
 {
 public:
-	~RTSPClientService();
-	void Start(const char* baseUrl, LogCallback logCallback, RawDataCallback gazeCallback, RawDataCallback worldCallback);
+	~RTSPWorker();
+	void Start(const char* baseUrl, u_int8_t streamMask, LogCallback logCallback, RawDataCallback dataCallback);
 	void Stop();
+	bool isIdle = true;
+	std::atomic<char> clientStatus[RTSP_MAX_CLIENT_COUNT] = { StreamStatus::SST_UNINITIALIZED };
 
 private:
 	std::string baseUrl; //rtsp://192.168.1.27:8086
-	RawDataCallback dataCallbacks[RTSP_MAX_CLIENT_COUNT] = { NULL };
+	RawDataCallback dataCallback = NULL;
 	TaskScheduler* scheduler = NULL;
 	UsageEnvironment* env = NULL;
 	volatile char watchVariable = 0;
 	std::thread workerThread;
+	u_int8_t streamMask = 0;
 
 	void DoWork();
 };
 
-RTSPClientService::~RTSPClientService()
+RTSPWorker::~RTSPWorker()
 {
 	Stop();
 }
 
-void RTSPClientService::Start(const char* baseUrl, LogCallback logCallback, RawDataCallback gazeCallback, RawDataCallback worldCallback)
+void RTSPWorker::Start(const char* baseUrl, u_int8_t streamMask, LogCallback logCallback, RawDataCallback dataCallback)
 {
+	isIdle = false;
 	if (workerThread.joinable()) {
 		Stop();
 	}
 	this->baseUrl = std::string(baseUrl);
-	this->dataCallbacks[StreamId::SID_GAZE] = gazeCallback;
-	this->dataCallbacks[StreamId::SID_WORLD] = worldCallback;
+	this->streamMask = streamMask;
+	this->dataCallback = dataCallback;
 	watchVariable = 0;
 	scheduler = BasicTaskScheduler::createNew();
 	env = LoggingUsageEnvironment::createNew(*scheduler, logCallback);
-	workerThread = std::thread(&RTSPClientService::DoWork, this);
+	workerThread = std::thread(&RTSPWorker::DoWork, this);
 }
 
-void RTSPClientService::Stop()
+void RTSPWorker::Stop()
 {
 	watchVariable = 1;
 	if (workerThread.joinable())
@@ -622,59 +606,186 @@ void RTSPClientService::Stop()
 		delete scheduler;
 		scheduler = NULL;
 	}
+	isIdle = true;
 }
 
-void RTSPClientService::DoWork()
+void RTSPWorker::DoWork()
 {
-	const char* urlParameters[RTSP_MAX_CLIENT_COUNT] = { "/?camera=gaze&audioenable=off", "/?camera=world&audioenable=off" };
+	char appName[128];
+	const char* urlParameters[RTSP_MAX_CLIENT_COUNT] = { "/?camera=imu", "/?camera=world&audioenable=on", "/?camera=gaze", "/?camera=eye_events", "/?camera=eyes" };
 	RTSPClient* clients[RTSP_MAX_CLIENT_COUNT] = { NULL };
-	for (size_t i = 0; i < RTSP_MAX_CLIENT_COUNT; i++)
+	for (u_int8_t i = 0; i < RTSP_MAX_CLIENT_COUNT; i++)
 	{
-		if (dataCallbacks[i] != NULL) {
-			clients[i] = openURL(*env, "Live555RTSPClient", (baseUrl + urlParameters[i]).c_str(), i, dataCallbacks[i]);
+		if ((streamMask >> i) & 1) {
+			appName[0] = snprintf(appName, sizeof(appName), "RTSPClient_%d", i);
+			clients[i] = openURL(*env, appName, (baseUrl + urlParameters[i]).c_str(), i, clientStatus[i], dataCallback);
 		}
 	}
 
 	env->taskScheduler().doEventLoop(&watchVariable);
 
-	for (size_t i = 0; i < RTSP_MAX_CLIENT_COUNT; i++)
+	for (u_int8_t i = 0; i < RTSP_MAX_CLIENT_COUNT; i++)
 	{
-		unsigned clientStatus = rtspClientStatus[i];
-		if (clientStatus != StreamStatus::UNINITIALIZED && clientStatus != StreamStatus::SHUTDOWN) {
+		char status = clientStatus[i];
+		if (status != StreamStatus::SST_UNINITIALIZED && status != StreamStatus::SST_SHUTDOWN) {
 			shutdownStream(clients[i]);
 		}
 		clients[i] = NULL;
 	}
 }
 
-static bool isLittleEndian() {
-	uint16_t number = 1; //0x0001
+class RTSPClientService
+{
+public:
+	~RTSPClientService();
+	short StartWorker(const char* baseUrl, u_int8_t streamMask, LogCallback logCallback, RawDataCallback dataCallback);
+	void StopWorker(u_int8_t id);
+	void Stop();
+
+private:
+	RTSPWorker workers[RTSP_MAX_WORKER_COUNT];
+};
+
+RTSPClientService::~RTSPClientService()
+{
+	Stop();
+}
+
+short RTSPClientService::StartWorker(const char* baseUrl, u_int8_t streamMask, LogCallback logCallback, RawDataCallback dataCallback)
+{
+	for (u_int8_t i = 0; i < RTSP_MAX_WORKER_COUNT; i++)
+	{
+		if (workers[i].isIdle) {
+			workers[i].Start(baseUrl, streamMask, logCallback, dataCallback);
+			return i;
+		}
+	}
+	return -1;
+}
+
+void RTSPClientService::StopWorker(u_int8_t id)
+{
+	workers[id].Stop();
+}
+
+void RTSPClientService::Stop()
+{
+	for (u_int8_t i = 0; i < RTSP_MAX_WORKER_COUNT; i++)
+	{
+		StopWorker(i);
+	}
+}
+
+static bool sysIsLittleEndian() {
+	u_int16_t number = 1; //0x0001
 	u_int8_t* firstByte = (u_int8_t*)&number;
 	return firstByte[0] == 1;
 }
 
-static float bytesToFloat(const u_int8_t* bytes) {
+template<typename T>
+T convertBytes(const u_int8_t* bytes, bool srcIsLittleEndian) {
+	T result;
+	const int nbytes = sizeof(T);
+	u_int8_t reorderedBytes[nbytes] = { 0 };
 
-	static_assert(sizeof(float) == 4, "This code requires float to be 4 bytes");
-
-	float result;
-	u_int8_t reorderedBytes[4];
-
-	if (isLittleEndian()) {
-		reorderedBytes[0] = bytes[3];
-		reorderedBytes[1] = bytes[2];
-		reorderedBytes[2] = bytes[1];
-		reorderedBytes[3] = bytes[0];
+	if (srcIsLittleEndian ^ sysIsLittleEndian()) {
+		for (unsigned int i = 0; i < nbytes; i++) {
+			reorderedBytes[i] = bytes[nbytes - i - 1];
+		}
 	}
 	else {
-		std::memcpy(reorderedBytes, bytes, 4);
+		std::memcpy(reorderedBytes, bytes, nbytes);
 	}
 
-	std::memcpy(&result, reorderedBytes, sizeof(result));
+	std::memcpy(&result, reorderedBytes, nbytes);
 	return result;
 }
 
-static std::vector<u_int8_t> processNalUnit(const unsigned int size, const u_int8_t* unit) {
+template<typename T>
+unsigned int bytesToArray(T* dest, const u_int8_t* src, unsigned int startSrc, unsigned int count, bool srcIsLittleEndian) {
+	unsigned int currentPos = startSrc;
+	for (unsigned int i = 0; i < count; i++)
+	{
+		if (dest != NULL) {
+			dest[i] = convertBytes<T>(&src[currentPos], srcIsLittleEndian);
+		}
+		currentPos += sizeof(T);
+	}
+	return currentPos;
+}
+
+static unsigned int bytesToFloats(float* dest, const u_int8_t* src, unsigned int startSrc, unsigned int count, bool srcIsLittleEndian = false) {
+	static_assert(sizeof(float) == 4, "This code requires float to be 4 byte");
+	return bytesToArray<float>(dest, src, startSrc, count, srcIsLittleEndian);
+}
+
+static unsigned int bytesToBooleans(bool* dest, const u_int8_t* src, unsigned int startSrc, unsigned int count) {
+	static_assert(sizeof(bool) == 1, "This code requires bool to be 1 byte");
+	return bytesToArray<bool>(dest, src, startSrc, count, false);
+}
+
+static unsigned int bytesToInts(int* dest, const u_int8_t* src, unsigned int startSrc, unsigned int count, bool srcIsLittleEndian = false) {
+	static_assert(sizeof(int) == 4, "This code requires int to be 4 bytes");
+	return bytesToArray<int>(dest, src, startSrc, count, srcIsLittleEndian);
+}
+
+static unsigned int bytesToLongLongs(long long* dest, const u_int8_t* src, unsigned int startSrc, unsigned int count, bool srcIsLittleEndian = false) {
+	static_assert(sizeof(long long) == 8, "This code requires long long to be 8 bytes");
+	return bytesToArray<long long>(dest, src, startSrc, count, srcIsLittleEndian);
+}
+
+static unsigned int bytesToVarint64s(unsigned long long* dest, const u_int8_t* src, unsigned int startSrc, unsigned int count) {
+	static_assert(sizeof(long long) == 8, "This code requires long long to be 8 bytes");
+	unsigned int currentPos = startSrc;
+	for (unsigned int i = 0; i < count; i++)
+	{
+		unsigned long long result = 0;
+		unsigned int shift = 0;
+		unsigned int posLimit = currentPos + 10; //max 10 bytes
+		while (currentPos < posLimit) {
+			unsigned long long byte = src[currentPos++];
+			result |= (byte & 0x7F) << shift;
+			shift += 7;
+			if ((byte & 0x80) == 0) { //end of varint
+				if (dest != NULL) {
+					dest[i] = result;
+				}
+				break;
+			}
+		}
+	}
+	return currentPos;
+}
+
+unsigned int parseProtobufMsg(void** destPtrMap, const u_int8_t* src, unsigned int startSrc, unsigned int msgSize) {
+	unsigned int currentPos = startSrc;
+	unsigned int posLimit = currentPos + msgSize;
+	while (currentPos < posLimit) {
+		unsigned long long tag = 0;
+		currentPos = bytesToVarint64s(&tag, src, currentPos, 1);
+		unsigned int fieldNum = tag >> 3;
+		int fieldId = fieldNum - 1;
+		unsigned int wireType = tag & 7;
+		switch (wireType) {
+		case 0: // varint
+			currentPos = bytesToVarint64s((unsigned long long*)destPtrMap[fieldId], src, currentPos, 1);
+			break;
+		case 2: // embedded message
+		{
+			unsigned long long msgLength = 0;
+			currentPos = bytesToVarint64s(&msgLength, src, currentPos, 1);
+			currentPos = parseProtobufMsg((void**)destPtrMap[fieldId], src, currentPos, msgLength);
+			break;
+		}
+		case 5: //float
+			currentPos = bytesToFloats((float*)destPtrMap[fieldId], src, currentPos, 1, true);
+			break;
+		}
+	}
+	return currentPos;
+}
+
+static std::vector<u_int8_t> processNalUnit(unsigned int size, const u_int8_t* unit) {
 	const u_int8_t startCode[4] = { 0x00, 0x00, 0x00, 0x01 };
 	std::vector<u_int8_t> result(startCode, startCode + sizeof(startCode));
 	size_t offset = 0;
@@ -725,16 +836,107 @@ static std::vector<u_int8_t> processNalUnit(const unsigned int size, const u_int
 
 static RTSPClientService service;
 
-void CStart(const char* url, LogCallback logCallback, RawDataCallback gazeCallback, RawDataCallback worldCallback) {
-	service.Start(url, logCallback, gazeCallback, worldCallback);
+short pl_start_worker(const char* url, u_int8_t streamMask, LogCallback logCallback, RawDataCallback dataCallback) {
+	return service.StartWorker(url, streamMask, logCallback, dataCallback);
 }
 
-void CStop() {
+void pl_stop_worker(u_int8_t id) {
+	service.StopWorker(id);
+}
+
+void pl_stop_service() {
 	service.Stop();
 }
 
-void CBytesToGazePoint(const u_int8_t* bytes, float* out) {
-	out[0] = bytesToFloat(&bytes[0]);
-	out[1] = bytesToFloat(&bytes[4]);
+int pl_bytes_to_eye_tracking_data(
+	const u_int8_t* bytes,
+	unsigned int size,
+	float* gazePoint, bool* worn,
+	float* gazePointDualRight,
+	float* eyeStateLeft, float* eyeStateRight,
+	float* eyelidLeft, float* eyelidRight
+) {
+	int currentPos = 0;
+	currentPos = bytesToFloats(gazePoint, bytes, currentPos, 2);
+	currentPos = bytesToBooleans(worn, bytes, currentPos, 1);
+	if (currentPos == size) {
+		return EtDataType::EDT_GAZE_DATA;
+	}
+	if (currentPos + 8 == size) {
+		currentPos = bytesToFloats(gazePointDualRight, bytes, currentPos, 2);
+		return EtDataType::EDT_DUAL_MONOCULAR_GAZE_DATA;
+	}
+	currentPos = bytesToFloats(eyeStateLeft, bytes, currentPos, 7);
+	currentPos = bytesToFloats(eyeStateRight, bytes, currentPos, 7);
+	if (currentPos == size) {
+		return EtDataType::EDT_EYE_STATE_GAZE_DATA;
+	}
+	currentPos = bytesToFloats(eyelidLeft, bytes, currentPos, 6);
+	currentPos = bytesToFloats(eyelidRight, bytes, currentPos, 6);
+	if (currentPos == size) {
+		return EtDataType::EDT_EYE_STATE_EYELID_GAZE_DATA;
+	}
+	return EtDataType::EDT_UNKNOWN;
 }
 
+int pl_bytes_to_eye_event_data(
+	const u_int8_t* bytes,
+	unsigned int size,
+	int* eventType, long long* startTime,
+	long long* endTime,
+	float* gazeEvent
+) {
+	int currentPos = 0;
+	currentPos = bytesToInts(eventType, bytes, currentPos, 1);
+	currentPos = bytesToLongLongs(startTime, bytes, currentPos, 1);
+	int et = *eventType;
+	if (et != EyeEventsDataType::EEDT_SACCADE_ONSET && et != EyeEventsDataType::EEDT_FIXATION_ONSET)
+	{
+		currentPos = bytesToLongLongs(endTime, bytes, currentPos, 1);
+		if (et == EyeEventsDataType::EEDT_SACCADE || et == EyeEventsDataType::EEDT_FIXATION)
+		{
+			currentPos = bytesToFloats(gazeEvent, bytes, currentPos, 10);
+		}
+	}
+	return *eventType;
+}
+
+int pl_bytes_to_imu_data(
+	const u_int8_t* bytes,
+	unsigned int size,
+	unsigned long long* tsNs,
+	float* accelData,
+	float* gyroData,
+	float* quatData
+) {
+	unsigned long long tmpInt;
+	float tmpFloat;
+	void* accelPtr[4] = { NULL };
+	if (accelData != NULL) {
+		accelPtr[0] = &accelData[0];
+		accelPtr[1] = &accelData[1];
+		accelPtr[2] = &accelData[2];
+		accelPtr[3] = &tmpInt;
+	}
+	void* gyroPtr[4] = { NULL };
+	if (gyroData != NULL)
+	{
+		gyroPtr[0] = &gyroData[0];
+		gyroPtr[1] = &gyroData[1];
+		gyroPtr[2] = &gyroData[2];
+		gyroPtr[3] = &tmpInt;
+	};
+	void* quatPtr[5] = { NULL };
+	if (quatData != NULL)
+	{
+		quatPtr[0] = &quatData[0];
+		quatPtr[1] = &quatData[1];
+		quatPtr[2] = &quatData[2];
+		quatPtr[3] = &quatData[3];
+		quatPtr[4] = &tmpFloat;
+	};
+	void* ptrMap[] = { tsNs, accelPtr, gyroPtr, quatPtr };
+
+	parseProtobufMsg(ptrMap, bytes, 0, size);
+	return 0;
+}
