@@ -69,8 +69,7 @@ void audioCallback(int64_t timestampMs, unsigned int dataSize, const u_int8_t* d
 }
 
 void eyeEventsCallback(int64_t timestampMs, unsigned int dataSize, const u_int8_t* data) {
-	int eyeEventType = 0;
-	pl_bytes_to_eye_event_data(data, dataSize, &eyeEventType, NULL, NULL, NULL);
+	int eyeEventType = pl_bytes_to_eye_event_data(data, dataSize, NULL, NULL, NULL);
 	if (eyeEventType == EyeEventsDataType::EEDT_FIXATION_ONSET) {
 		fixationOnSet = true;
 	}
