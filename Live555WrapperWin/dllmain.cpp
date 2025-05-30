@@ -882,23 +882,23 @@ int pl_bytes_to_eye_tracking_data(
 int pl_bytes_to_eye_event_data(
 	const u_int8_t* bytes,
 	unsigned int size,
-	int* eventType, long long* startTime,
+	long long* startTime,
 	long long* endTime,
 	float* gazeEvent
 ) {
 	int currentPos = 0;
-	currentPos = bytesToInts(eventType, bytes, currentPos, 1);
+	int eventType = 0;
+	currentPos = bytesToInts(&eventType, bytes, currentPos, 1);
 	currentPos = bytesToLongLongs(startTime, bytes, currentPos, 1);
-	int et = *eventType;
-	if (et != EyeEventsDataType::EEDT_SACCADE_ONSET && et != EyeEventsDataType::EEDT_FIXATION_ONSET)
+	if (eventType != EyeEventsDataType::EEDT_SACCADE_ONSET && eventType != EyeEventsDataType::EEDT_FIXATION_ONSET)
 	{
 		currentPos = bytesToLongLongs(endTime, bytes, currentPos, 1);
-		if (et == EyeEventsDataType::EEDT_SACCADE || et == EyeEventsDataType::EEDT_FIXATION)
+		if (eventType == EyeEventsDataType::EEDT_SACCADE || eventType == EyeEventsDataType::EEDT_FIXATION)
 		{
 			currentPos = bytesToFloats(gazeEvent, bytes, currentPos, 10);
 		}
 	}
-	return *eventType;
+	return eventType;
 }
 
 int pl_bytes_to_imu_data(

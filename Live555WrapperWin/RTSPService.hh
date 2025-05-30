@@ -56,6 +56,22 @@ enum RTPPayloadFormat {
 	PF_EYE_EVENTS = 101
 };
 
+/**
+ * @brief Decodes raw data received from gaze stream.
+ *
+ * @param[in]  bytes				Pointer to a byte array containing raw data.
+ * @param[in]  size					Size of the data buffer in bytes.
+ *
+ * @param[out] gazePoint			Pointer to a float array where gaze point (x, y) will be set (binocular, or left eye in case of dual-monocular gaze data).
+ * @param[out] worn					Pointer to a bool where the worn flag will be set.
+ * @param[out] gazePointDualRight	Pointer to a float array where gaze point (x, y) for right eye will be set (in case of dual-monocular gaze data).
+ * @param[out] eyeStateLeft			Pointer to float array of 7 elements where left eye state (pupil diameter, eyeball center [x, y, z], optical axis [x, y, z]) will be set.
+ * @param[out] eyeStateRight		Same as eyeStateLeft but for the right eye.
+ * @param[out] eyelidLeft			Pointer to float array of 3 elements where left eyelid state (angle top, angle bottom, aperture) will be set.
+ * @param[out] eyelidRight			Same as eyelidLeft but for the right eyelid.
+ *
+ * @return type of received data (see EtDataType).
+ */
 extern "C" LIVE555WRAPPERWIN_API int pl_bytes_to_eye_tracking_data(
 	const u_int8_t* bytes,
 	const unsigned int size,
@@ -64,13 +80,40 @@ extern "C" LIVE555WRAPPERWIN_API int pl_bytes_to_eye_tracking_data(
 	float* eyeStateLeft, float* eyeStateRight,
 	float* eyelidLeft, float* eyelidRight
 );
+
+/**
+ * @brief Decodes raw data received from eye events stream.
+ *
+ * @param[in]  bytes				Pointer to a byte array containing raw data.
+ * @param[in]  size					Size of the data buffer in bytes.
+ *
+ * @param[out] startTime			Pointer to a long long where start time will be set.
+ * @param[out] endTime				Pointer to a long long where end time will be set.
+ * @param[out] gazeEvent			Pointer to float array of 10 elements where gaze event data (start gaze [x, y], end gaze [x, y], mean gaze [x, y], amplitude pixels, amplitude deg, mean velocity, max velocity) will be set (if available for given type).
+ *
+ * @return type of received data (see EyeEventsDataType).
+ */
 extern "C" LIVE555WRAPPERWIN_API int pl_bytes_to_eye_event_data(
 	const u_int8_t* bytes,
 	const unsigned int size,
-	int* eventType, long long* startTime,
+	long long* startTime,
 	long long* endTime,
 	float* gazeEvent
 );
+
+/**
+ * @brief Decodes raw data received from IMU stream.
+ *
+ * @param[in]  bytes				Pointer to a byte array containing raw data.
+ * @param[in]  size					Size of the data buffer in bytes.
+ *
+ * @param[out] tsNs					Pointer to a long long where timestamp in ns will be set.
+ * @param[out] accelData			Pointer to float array of 3 elements where acceleration data (x, y, z) will be set.
+ * @param[out] gyroData				Pointer to float array of 3 elements where gyroscope data (x, y, z) will be set.
+ * @param[out] quatData				Pointer to float array of 4 elements where quaternion data (w, x, y, z) will be set.
+ *
+ * @return type of received data (always 0).
+ */
 extern "C" LIVE555WRAPPERWIN_API int pl_bytes_to_imu_data(
 	const u_int8_t* bytes,
 	unsigned int size,
@@ -79,6 +122,27 @@ extern "C" LIVE555WRAPPERWIN_API int pl_bytes_to_imu_data(
 	float* gyroData,
 	float* quatData
 );
+
+/**
+ * @brief Starts a worker thread that handles multiple data streams.
+ *
+ * @param[in] url			Pointer to a null-terminated string representing the RTSP stream URL.
+ * @param[in] streamMask	Bitmask indicating which streams to enable.
+ * @param[in] logCallback	Callback function invoked for logging events.
+ * @param[in] dataCallback	Callback function invoked when new data is received.
+ *
+ * @return ID of the created worker thread, or -1 on failure.
+ */
 extern "C" LIVE555WRAPPERWIN_API short pl_start_worker(const char* url, u_int8_t streamMask, LogCallback logCallback, RawDataCallback dataCallback);
+
+/**
+ * @brief Stops a specific worker thread.
+ *
+ * @param[in] id	Identifier of the worker thread to stop.
+ */
 extern "C" LIVE555WRAPPERWIN_API void pl_stop_worker(u_int8_t id);
+
+/**
+ * @brief Stops all worker threads and frees allocated resources.
+ */
 extern "C" LIVE555WRAPPERWIN_API void pl_stop_service();
