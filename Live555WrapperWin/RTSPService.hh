@@ -14,13 +14,20 @@ typedef unsigned char u_int8_t;
 typedef void (*LogCallback)(const char* message);
 typedef void (*RawDataCallback)(int64_t timestampMs, u_int8_t streamId, u_int8_t payloadFormat, unsigned int dataSize, const u_int8_t* data);
 
+enum EyeEventType {
+	EET_SACCADE = 0,
+	EET_FIXATION = 1,
+	EET_SACCADE_ONSET = 2,
+	EET_FIXATION_ONSET = 3,
+	EET_BLINK = 4,
+	EET_KEEPALIVE = 5
+};
+
 enum EyeEventsDataType {
-	EEDT_SACCADE = 0,
-	EEDT_FIXATION = 1,
-	EEDT_SACCADE_ONSET = 2,
-	EEDT_FIXATION_ONSET = 3,
-	EEDT_BLINK = 4,
-	EEDT_KEEPALIVE = 5
+	EEDT_FIXATION_DATA = 0,
+	EEDT_FIXATION_ONSET_DATA = 1,
+	EEDT_BLINK_DATA = 2,
+	EEDT_UNKNOWN = -1
 };
 
 enum EtDataType : int {
@@ -87,6 +94,7 @@ extern "C" LIVE555WRAPPERWIN_API int pl_bytes_to_eye_tracking_data(
  * @param[in]  bytes                Pointer to a byte array containing raw data.
  * @param[in]  size                 Size of the data buffer in bytes.
  *
+ * @param[out] eventType            Pointer to a int where event type will be set (see EyeEventType).
  * @param[out] startTime            Pointer to a long long where start time will be set.
  * @param[out] endTime              Pointer to a long long where end time will be set.
  * @param[out] gazeEvent            Pointer to float array of 10 elements where gaze event data (start gaze [x, y], end gaze [x, y], mean gaze [x, y], amplitude pixels, amplitude deg, mean velocity, max velocity) will be set (if available for given type).
@@ -96,7 +104,7 @@ extern "C" LIVE555WRAPPERWIN_API int pl_bytes_to_eye_tracking_data(
 extern "C" LIVE555WRAPPERWIN_API int pl_bytes_to_eye_event_data(
 	const u_int8_t* bytes,
 	const unsigned int size,
-	long long* startTime,
+	int* eventType, long long* startTime,
 	long long* endTime,
 	float* gazeEvent
 );

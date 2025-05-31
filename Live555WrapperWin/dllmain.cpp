@@ -154,7 +154,7 @@ static RTSPClient* openURL(UsageEnvironment& env, char const* progName, char con
 		return NULL;
 	}
 
-	rtspClient->statusRef = StreamStatus::SST_CLIENT_CREATED;
+	rtspClient->statusRef = SST_CLIENT_CREATED;
 
 	// Next, send a RTSP "DESCRIBE" command, to get a SDP description for the stream.
 	// Note that this command - like all RTSP commands - is sent asynchronously; we do not block, waiting for a response.
@@ -193,7 +193,7 @@ static void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* 
 			break;
 		}
 
-		oRtspClient->statusRef = StreamStatus::SST_DESCRIBE_SUCCESS;
+		oRtspClient->statusRef = SST_DESCRIBE_SUCCESS;
 
 		// Then, create and set up our data source objects for the session.  We do this by iterating over the session's 'subsessions',
 		// calling "MediaSubsession::initiate()", and then sending a RTSP "SETUP" command, on each one.
@@ -238,7 +238,7 @@ static void setupNextSubsession(RTSPClient* rtspClient) {
 		return;
 	}
 
-	oRtspClient->statusRef = StreamStatus::SST_SETUP_SUCCESS;
+	oRtspClient->statusRef = SST_SETUP_SUCCESS;
 
 	// We've finished setting up all of the subsessions.  Now, send a RTSP "PLAY" command to start the streaming:
 	if (scs.session->absStartTime() != NULL) {
@@ -280,12 +280,12 @@ static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* res
 		const u_int8_t streamId = oRtspClient->id;
 		switch (payloadFormat)
 		{
-		case(RTPPayloadFormat::PF_AUDIO):
-		case(RTPPayloadFormat::PF_IMU):
-		case(RTPPayloadFormat::PF_GAZE):
-		case(RTPPayloadFormat::PF_EYE_EVENTS):
+		case(PF_AUDIO):
+		case(PF_IMU):
+		case(PF_GAZE):
+		case(PF_EYE_EVENTS):
 			break;
-		case(RTPPayloadFormat::PF_VIDEO):
+		case(PF_VIDEO):
 		{
 			std::string codecName = scs.subsession->codecName();
 			if (codecName != "H264") {
@@ -362,7 +362,7 @@ static void continueAfterPLAY(RTSPClient* rtspClient, int resultCode, char* resu
 		}
 		env << "...\n";
 
-		oRtspClient->statusRef = StreamStatus::SST_PLAY_SUCCESS;
+		oRtspClient->statusRef = SST_PLAY_SUCCESS;
 		success = True;
 	} while (0);
 	delete[] resultString;
@@ -452,7 +452,7 @@ static void shutdownStream(RTSPClient* rtspClient, int exitCode) {
 		}
 	}
 
-	oRtspClient->statusRef = StreamStatus::SST_SHUTDOWN;
+	oRtspClient->statusRef = SST_SHUTDOWN;
 
 	env << *rtspClient << "Closing the stream.\n";
 	Medium::close(rtspClient);
@@ -557,7 +557,7 @@ public:
 	void Start(const char* baseUrl, u_int8_t streamMask, LogCallback logCallback, RawDataCallback dataCallback);
 	void Stop();
 	bool isIdle = true;
-	std::atomic<char> clientStatus[RTSP_MAX_CLIENT_COUNT] = { StreamStatus::SST_UNINITIALIZED };
+	std::atomic<char> clientStatus[RTSP_MAX_CLIENT_COUNT] = { SST_UNINITIALIZED };
 
 private:
 	std::string baseUrl; //rtsp://192.168.1.27:8086
@@ -627,7 +627,7 @@ void RTSPWorker::DoWork()
 	for (u_int8_t i = 0; i < RTSP_MAX_CLIENT_COUNT; i++)
 	{
 		char status = clientStatus[i];
-		if (status != StreamStatus::SST_UNINITIALIZED && status != StreamStatus::SST_SHUTDOWN) {
+		if (status != SST_UNINITIALIZED && status != SST_SHUTDOWN) {
 			shutdownStream(clients[i]);
 		}
 		clients[i] = NULL;
@@ -860,45 +860,53 @@ int pl_bytes_to_eye_tracking_data(
 	currentPos = bytesToFloats(gazePoint, bytes, currentPos, 2);
 	currentPos = bytesToBooleans(worn, bytes, currentPos, 1);
 	if (currentPos == size) {
-		return EtDataType::EDT_GAZE_DATA;
+		return EDT_GAZE_DATA;
 	}
 	if (currentPos + 8 == size) {
 		currentPos = bytesToFloats(gazePointDualRight, bytes, currentPos, 2);
-		return EtDataType::EDT_DUAL_MONOCULAR_GAZE_DATA;
+		return EDT_DUAL_MONOCULAR_GAZE_DATA;
 	}
 	currentPos = bytesToFloats(eyeStateLeft, bytes, currentPos, 7);
 	currentPos = bytesToFloats(eyeStateRight, bytes, currentPos, 7);
 	if (currentPos == size) {
-		return EtDataType::EDT_EYE_STATE_GAZE_DATA;
+		return EDT_EYE_STATE_GAZE_DATA;
 	}
 	currentPos = bytesToFloats(eyelidLeft, bytes, currentPos, 6);
 	currentPos = bytesToFloats(eyelidRight, bytes, currentPos, 6);
 	if (currentPos == size) {
-		return EtDataType::EDT_EYE_STATE_EYELID_GAZE_DATA;
+		return EDT_EYE_STATE_EYELID_GAZE_DATA;
 	}
-	return EtDataType::EDT_UNKNOWN;
+	return EDT_UNKNOWN;
 }
 
 int pl_bytes_to_eye_event_data(
 	const u_int8_t* bytes,
 	unsigned int size,
-	long long* startTime,
+	int* eventType, long long* startTime,
 	long long* endTime,
 	float* gazeEvent
 ) {
+	int dataTypeByEventType[] = { EEDT_FIXATION_DATA, EEDT_FIXATION_DATA, EEDT_FIXATION_ONSET_DATA, EEDT_FIXATION_ONSET_DATA, EEDT_BLINK_DATA };
 	int currentPos = 0;
-	int eventType = 0;
-	currentPos = bytesToInts(&eventType, bytes, currentPos, 1);
-	currentPos = bytesToLongLongs(startTime, bytes, currentPos, 1);
-	if (eventType != EyeEventsDataType::EEDT_SACCADE_ONSET && eventType != EyeEventsDataType::EEDT_FIXATION_ONSET)
-	{
-		currentPos = bytesToLongLongs(endTime, bytes, currentPos, 1);
-		if (eventType == EyeEventsDataType::EEDT_SACCADE || eventType == EyeEventsDataType::EEDT_FIXATION)
-		{
-			currentPos = bytesToFloats(gazeEvent, bytes, currentPos, 10);
-		}
+	currentPos = bytesToInts(eventType, bytes, currentPos, 1);
+	int et = *eventType;
+	int eedt = EEDT_UNKNOWN;
+	if (et >= 0 && et <= 4) {
+		eedt = dataTypeByEventType[et];
 	}
-	return eventType;
+	else {
+		return eedt; //unknown data
+	}
+	currentPos = bytesToLongLongs(startTime, bytes, currentPos, 1);
+	if (eedt == EEDT_FIXATION_ONSET_DATA) {
+		return eedt; //fixation onset data
+	}
+	currentPos = bytesToLongLongs(endTime, bytes, currentPos, 1);
+	if (eedt == EEDT_BLINK_DATA) {
+		return eedt; //blink data
+	}
+	currentPos = bytesToFloats(gazeEvent, bytes, currentPos, 10);
+	return eedt; //fixation data
 }
 
 int pl_bytes_to_imu_data(
