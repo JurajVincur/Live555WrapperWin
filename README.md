@@ -69,11 +69,12 @@ void audioCallback(int64_t timestampMs, unsigned int dataSize, const u_int8_t* d
 }
 
 void eyeEventsCallback(int64_t timestampMs, unsigned int dataSize, const u_int8_t* data) {
-	int eyeEventType = pl_bytes_to_eye_event_data(data, dataSize, NULL, NULL, NULL);
-	if (eyeEventType == EyeEventsDataType::EEDT_FIXATION_ONSET) {
+	int eyeEventType = 0;
+	pl_bytes_to_eye_event_data(data, dataSize, &eyeEventType, NULL, NULL, NULL);
+	if (eyeEventType == EyeEventType::EET_FIXATION_ONSET) {
 		fixationOnSet = true;
 	}
-	else if (eyeEventType == EyeEventsDataType::EEDT_SACCADE_ONSET) {
+	else if (eyeEventType == EyeEventType::EET_SACCADE_ONSET) {
 		fixationOnSet = false;
 	}
 	//std::cout << "RECEIVED EYE EVENT DATA AT: " << timestampMs << std::endl;
