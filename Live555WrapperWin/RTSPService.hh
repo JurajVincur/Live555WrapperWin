@@ -12,6 +12,16 @@
 
 typedef unsigned char u_int8_t;
 typedef void (*LogCallback)(const char* message);
+
+/**
+ * @brief Function pointer type for callbacks handling raw data received by a worker.
+ *
+ * @param[in] timestampMs       Timestamp of the data in milliseconds.
+ * @param[in] streamId          ID of the source stream (see StreamId).
+ * @param[in] payloadFormat     Format of the payload (see RTPPayloadFormat).
+ * @param[in] dataSize          Size of the data in bytes.
+ * @param[in] data              Pointer to the raw data buffer.
+ */
 typedef void (*RawDataCallback)(int64_t timestampMs, u_int8_t streamId, u_int8_t payloadFormat, unsigned int dataSize, const u_int8_t* data);
 
 enum EyeEventType {
@@ -135,7 +145,7 @@ extern "C" LIVE555WRAPPERWIN_API int pl_bytes_to_imu_data(
  * @brief Starts a worker thread that handles multiple data streams.
  *
  * @param[in] url           Pointer to a null-terminated string representing the RTSP stream URL.
- * @param[in] streamMask    Bitmask indicating which streams to enable.
+ * @param[in] streamMask    Bitmask indicating which streams to enable (LSB first: [imu | world | gaze | eye_events | eyes | x | x | x]).
  * @param[in] logCallback   Callback function invoked for logging events.
  * @param[in] dataCallback  Callback function invoked when new data is received.
  *
