@@ -80,7 +80,7 @@ void eyeEventsCallback(int64_t timestampMs, unsigned int dataSize, const u_int8_
 	//std::cout << "RECEIVED EYE EVENT DATA AT: " << timestampMs << std::endl;
 }
 
-void dataCallback(int64_t timestampMs, u_int8_t streamId, u_int8_t payloadFormat, unsigned int dataSize, const u_int8_t* data) {
+void dataCallback(int64_t timestampMs, bool rtcpSynchronized, u_int8_t streamId, u_int8_t payloadFormat, unsigned int dataSize, const u_int8_t* data) {
 	//std::cout << "RECEIVED DATA FROM STREAM: " << unsigned(streamId) << " FORMAT: " << unsigned(payloadFormat) << " SIZE: " << dataSize << std::endl;
 	if (streamId == StreamId::SID_WORLD) {
 		if (payloadFormat == RTPPayloadFormat::PF_VIDEO) {

@@ -298,7 +298,7 @@ static void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* res
 			for (size_t i = 0; i < n; i++)
 			{
 				std::vector<u_int8_t> processed = processNalUnit(record[i].sPropLength, record[i].sPropBytes);
-				oRtspClient->dataCallback(0, streamId, payloadFormat, processed.size(), processed.data());
+				oRtspClient->dataCallback(0, false, streamId, payloadFormat, processed.size(), processed.data());
 			}
 			delete[] record;
 			dataPostprocessor = processNalUnit;
@@ -534,7 +534,7 @@ void CallbackSink::afterGettingFrame(unsigned frameSize, unsigned numTruncatedBy
 		frameSize = processed.size();
 		std::copy(processed.begin(), processed.end(), fReceiveBuffer);
 	}
-	dataCallback(presentationTime.tv_sec * 1000ll + presentationTime.tv_usec / 1000, fStreamId, fPayloadFormat, frameSize, fReceiveBuffer);
+	dataCallback(presentationTime.tv_sec * 1000ll + presentationTime.tv_usec / 1000, fSubsession.rtpSource()->hasBeenSynchronizedUsingRTCP(), fStreamId, fPayloadFormat, frameSize, fReceiveBuffer);
 
 	// Then continue, to request the next frame of data:
 	continuePlaying();

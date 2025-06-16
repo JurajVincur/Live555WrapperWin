@@ -17,12 +17,13 @@ typedef void (*LogCallback)(const char* message);
  * @brief Function pointer type for callbacks handling raw data received by a worker.
  *
  * @param[in] timestampMs       Timestamp of the data in milliseconds.
+ * @param[in] rtcpSynchronized  Indicates whether timestampMs is synchronized using RTCP.
  * @param[in] streamId          ID of the source stream (see StreamId).
  * @param[in] payloadFormat     Format of the payload (see RTPPayloadFormat).
  * @param[in] dataSize          Size of the data in bytes.
  * @param[in] data              Pointer to the raw data buffer.
  */
-typedef void (*RawDataCallback)(int64_t timestampMs, u_int8_t streamId, u_int8_t payloadFormat, unsigned int dataSize, const u_int8_t* data);
+typedef void (*RawDataCallback)(int64_t timestampMs, bool rtcpSynchronized, u_int8_t streamId, u_int8_t payloadFormat, unsigned int dataSize, const u_int8_t* data);
 
 enum EyeEventType {
 	EET_SACCADE = 0,
